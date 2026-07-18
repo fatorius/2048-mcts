@@ -34,6 +34,23 @@ def test_spread_beats_log2_normalization():
     assert hi > lo
 
 
+def test_state_dict_roundtrip():
+    import json
+
+    rng = np.random.default_rng(2)
+    vn = ValueNormalizer(momentum=0.05)
+    for _ in range(300):
+        vn.update(4, float(rng.normal(1200, 300)))
+        vn.update(6, float(rng.normal(40000, 8000)))
+
+    # Round-trip com chaves int (torch.save) e com chaves str (via JSON).
+    for state in (vn.state_dict(), json.loads(json.dumps(vn.state_dict()))):
+        vn2 = ValueNormalizer()
+        vn2.load_state_dict(state)
+        assert vn2.normalize(1500, 4) == vn.normalize(1500, 4)
+        assert vn2.normalize(45000, 6) == vn.normalize(45000, 6)
+
+
 def test_per_size_independent():
     rng = np.random.default_rng(1)
     vn = ValueNormalizer(momentum=0.05)

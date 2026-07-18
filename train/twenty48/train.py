@@ -73,26 +73,69 @@ def _mean(xs, key):
     return float(np.mean([key(x) for x in xs])) if xs else 0.0
 
 
-def train(cfg: TrainConfig) -> None:
+def _resolve_resume(path: str) -> Path:
+    """Aceita um .pt direto ou uma pasta de run (usa best.pt dela)."""
+    p = Path(path)
+    if p.is_dir():
+        p = p / "best.pt"
+    if not p.exists():
+        raise FileNotFoundError(f"checkpoint não encontrado: {p}")
+    return p
+
+
+def train(cfg: TrainConfig, resume: str | None = None) -> None:
     device = pick_device()
     # Diretório autocontido por run: config + log de métricas + checkpoints + onnx.
     run_dir = CKPT_DIR / f"run_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "config.json").write_text(json.dumps({**asdict(cfg), "device": device}, indent=2))
     metrics_path = run_dir / "metrics.jsonl"
 
     rng = np.random.default_rng(cfg.seed)
     torch.manual_seed(cfg.seed)
 
+    # Carrega o checkpoint ANTES de construir a rede — a arquitetura precisa casar
+    # com os pesos salvos.
+    ckpt = None
+    resumed_from = None
+    if resume:
+        ckpt_path = _resolve_resume(resume)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        saved = ckpt.get("cfg", {})
+        cfg.channels = saved.get("channels", cfg.channels)
+        cfg.blocks = saved.get("blocks", cfg.blocks)
+        cfg.warm_start = False  # já temos rede treinada — sem rollout na it0
+        resumed_from = str(ckpt_path)
+
     net = Net(cfg.channels, cfg.blocks).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     buffer = ReplayBuffer(cfg.buffer_per_size)
     normalizer = ValueNormalizer()
+    best_score = -1.0
+
+    if ckpt is not None:
+        net.load_state_dict(ckpt["net"])
+        if "opt" in ckpt:
+            opt.load_state_dict(ckpt["opt"])
+        if "normalizer" in ckpt:
+            normalizer.load_state_dict(ckpt["normalizer"])
+        best_score = ckpt.get("eval_mean_score", -1.0)  # não regride o best
+        # Semeia o best.pt do novo run com o modelo carregado, para a pasta ficar
+        # autocontida mesmo que nenhuma iteração supere o best histórico.
+        torch.save(ckpt, run_dir / "best.pt")
+        print(
+            f"resumido de {resumed_from} (iter orig {ckpt.get('iter')}, eval {best_score:.0f}) | "
+            f"opt={'ok' if 'opt' in ckpt else 'novo'} "
+            f"normalizer={'ok' if 'normalizer' in ckpt else 'novo'} buffer=novo (não persistido)",
+            flush=True,
+        )
+
+    (run_dir / "config.json").write_text(
+        json.dumps({**asdict(cfg), "device": device, "resumed_from": resumed_from}, indent=2)
+    )
     mcts_cfg = MctsConfig(simulations=cfg.sims, c_puct=cfg.c_puct, batch_size=cfg.mcts_batch)
 
     print(f"device={device}  params={param_count(net)}  sizes={cfg.sizes}", flush=True)
     print(f"run dir: {run_dir}", flush=True)
-    best_score = -1.0
 
     for it in range(cfg.iterations):
         # --- 1. SELF-PLAY ---
@@ -174,7 +217,14 @@ def train(cfg: TrainConfig) -> None:
         with metrics_path.open("a") as fh:
             fh.write(json.dumps(record) + "\n")
 
-        ckpt = {"net": net.state_dict(), "cfg": asdict(cfg), "iter": it, "eval_mean_score": m.mean_score}
+        ckpt = {
+            "net": net.state_dict(),
+            "opt": opt.state_dict(),
+            "normalizer": normalizer.state_dict(),
+            "cfg": asdict(cfg),
+            "iter": it,
+            "eval_mean_score": m.mean_score,
+        }
         torch.save(ckpt, run_dir / "latest.pt")
         if m.mean_score > best_score:
             best_score = m.mean_score
@@ -186,9 +236,10 @@ def train(cfg: TrainConfig) -> None:
     print(f"metrics log   -> {metrics_path}", flush=True)
 
 
-def _parse() -> TrainConfig:
+def _parse() -> tuple[TrainConfig, str | None]:
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true", help="run tiny config to validate pipeline")
+    p.add_argument("--resume", type=str, help="run dir ou .pt para retomar (usa best.pt da pasta)")
     p.add_argument("--iterations", type=int)
     p.add_argument("--games-per-iter", type=int)
     p.add_argument("--sims", type=int)
@@ -217,8 +268,9 @@ def _parse() -> TrainConfig:
         cfg.eval_games = args.eval_games
     if args.eval_sims is not None:
         cfg.eval_sims = args.eval_sims
-    return cfg
+    return cfg, args.resume
 
 
 if __name__ == "__main__":
-    train(_parse())
+    _cfg, _resume = _parse()
+    train(_cfg, resume=_resume)

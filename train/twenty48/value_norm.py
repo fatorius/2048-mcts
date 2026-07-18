@@ -62,3 +62,12 @@ class ValueNormalizer:
     def terminal_value_fn(self):
         """Fn para o MCTS avaliar folhas terminais na MESMA escala do alvo."""
         return lambda state: self.normalize(state.score, state.size)
+
+    def state_dict(self) -> dict:
+        return {"mean": dict(self._mean), "sq": dict(self._sq), "count": dict(self._count)}
+
+    def load_state_dict(self, state: dict) -> None:
+        # As chaves de tamanho podem virar str após serialização; normaliza p/ int.
+        self._mean = {int(k): v for k, v in state.get("mean", {}).items()}
+        self._sq = {int(k): v for k, v in state.get("sq", {}).items()}
+        self._count = {int(k): v for k, v in state.get("count", {}).items()}
