@@ -9,7 +9,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "profile": "tsx scripts/profile.ts"
   },
   "dependencies": {
     "react": "^19.2.7",
