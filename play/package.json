@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "bench": "tsx scripts/bench.ts",
-    "profile": "tsx scripts/profile.ts"
+    "profile": "tsx scripts/profile.ts",
+    "gen:fixtures": "tsx scripts/gen_fixtures.ts"
   },
   "dependencies": {
     "react": "^19.2.7",
