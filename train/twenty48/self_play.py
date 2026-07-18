@@ -13,9 +13,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .board import initial_state, is_terminal, max_exponent, normalize_score, step
+from .board import initial_state, is_terminal, max_exponent, step
 from .buffer import ReplayBuffer
 from .mcts import MctsConfig, run_mcts, select_move
+from .value_norm import ValueNormalizer
 
 
 @dataclass
@@ -32,15 +33,19 @@ def self_play_game(
     mcts_cfg: MctsConfig,
     size: int,
     buffer: ReplayBuffer,
+    normalizer: ValueNormalizer,
     temp_moves: int = 20,
     move_cap: int = 4000,
 ) -> GameStats:
     state = initial_state(size, rng)
     pending: list[tuple] = []  # (state, policy_target)
     moves = 0
+    terminal_value_fn = normalizer.terminal_value_fn()
 
     while not is_terminal(state) and moves < move_cap:
-        result, _ = run_mcts(state, evaluator, rng, mcts_cfg, add_noise=True)
+        result, _ = run_mcts(
+            state, evaluator, rng, mcts_cfg, add_noise=True, terminal_value_fn=terminal_value_fn
+        )
         if result.best_action == -1:
             break
 
@@ -56,8 +61,10 @@ def self_play_game(
         state, _ = step(state, action, rng)
         moves += 1
 
-    z = normalize_score(state.score)
+    # Guarda o score BRUTO; o alvo de valor padronizado é computado no treino com
+    # os μ,σ correntes. Atualiza a estatística móvel com o resultado desta partida.
     for st, pol in pending:
-        buffer.add(size, st, pol, z)
+        buffer.add(size, st, pol, float(state.score))
+    normalizer.update(size, state.score)
 
     return GameStats(size=size, score=state.score, max_exponent=max_exponent(state), moves=moves)

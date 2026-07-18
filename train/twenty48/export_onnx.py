@@ -27,4 +27,7 @@ def export_onnx(net: Net, path: str, example_size: int = 4, opset: int = 18) -> 
             "value": {0: "batch"},
         },
         opset_version=opset,
+        # Arquivo único (pesos embutidos) — sem sidecar .onnx.data, mais simples
+        # de servir no browser na Fase 4.
+        external_data=False,
     )

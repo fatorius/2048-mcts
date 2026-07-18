@@ -35,10 +35,12 @@ def evaluate_net(
     c_puct: float = 1.5,
     batch_size: int = 32,
     move_cap: int = 4000,
+    normalizer=None,
 ) -> EvalMetrics:
     net.eval()
     evaluator = NetEvaluator(net, device)
     cfg = MctsConfig(simulations=sims, c_puct=c_puct, batch_size=batch_size)
+    tvf = normalizer.terminal_value_fn() if normalizer is not None else None
 
     scores: list[int] = []
     exps: list[int] = []
@@ -46,7 +48,7 @@ def evaluate_net(
         state = initial_state(size, rng)
         moves = 0
         while not is_terminal(state) and moves < move_cap:
-            result, _ = run_mcts(state, evaluator, rng, cfg, add_noise=False)
+            result, _ = run_mcts(state, evaluator, rng, cfg, add_noise=False, terminal_value_fn=tvf)
             if result.best_action == -1:
                 break
             action = select_move(result.visits, 0.0, rng)  # guloso

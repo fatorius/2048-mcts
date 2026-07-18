@@ -148,13 +148,13 @@ def _sample_outcome(chance: ChanceNode, rng: np.random.Generator) -> DecisionNod
     return child
 
 
-def _descend(root: DecisionNode, c_puct: float, rng: np.random.Generator):
+def _descend(root: DecisionNode, c_puct: float, rng: np.random.Generator, terminal_value_fn):
     """Desce aplicando virtual loss. Retorna (path, leaf|None, terminal_value|None)."""
     path: list[tuple[DecisionNode, int]] = []
     node = root
     while True:
         if node.terminal:
-            return path, None, _terminal_value(node.state)
+            return path, None, terminal_value_fn(node.state)
         if not node.expanded:
             return path, node, None
         a = _select(node, c_puct)
@@ -204,7 +204,9 @@ def run_mcts(
     rng: np.random.Generator,
     config: MctsConfig,
     add_noise: bool = False,
+    terminal_value_fn=None,
 ) -> tuple[SearchResult, DecisionNode]:
+    tvf = terminal_value_fn if terminal_value_fn is not None else _terminal_value
     root = DecisionNode(root_state)
     if root.terminal:
         return SearchResult([0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [False] * 4, -1), root
@@ -219,7 +221,7 @@ def run_mcts(
         collected: list[tuple[list, DecisionNode | None, float | None]] = []
         leaves: list[DecisionNode] = []
         for _ in range(wave):
-            path, leaf, tval = _descend(root, config.c_puct, rng)
+            path, leaf, tval = _descend(root, config.c_puct, rng, tvf)
             if leaf is not None and not leaf.pending:
                 leaf.pending = True
                 leaves.append(leaf)

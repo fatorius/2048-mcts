@@ -13,8 +13,10 @@ Uso:
 from __future__ import annotations
 
 import argparse
+import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -29,6 +31,7 @@ from .export_onnx import export_onnx
 from .mcts import MctsConfig
 from .net import Net, param_count
 from .self_play import self_play_game
+from .value_norm import ValueNormalizer
 
 CKPT_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
 
@@ -72,16 +75,23 @@ def _mean(xs, key):
 
 def train(cfg: TrainConfig) -> None:
     device = pick_device()
-    CKPT_DIR.mkdir(exist_ok=True)
+    # Diretório autocontido por run: config + log de métricas + checkpoints + onnx.
+    run_dir = CKPT_DIR / f"run_{datetime.now():%Y%m%d_%H%M%S}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "config.json").write_text(json.dumps({**asdict(cfg), "device": device}, indent=2))
+    metrics_path = run_dir / "metrics.jsonl"
+
     rng = np.random.default_rng(cfg.seed)
     torch.manual_seed(cfg.seed)
 
     net = Net(cfg.channels, cfg.blocks).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     buffer = ReplayBuffer(cfg.buffer_per_size)
+    normalizer = ValueNormalizer()
     mcts_cfg = MctsConfig(simulations=cfg.sims, c_puct=cfg.c_puct, batch_size=cfg.mcts_batch)
 
-    print(f"device={device}  params={param_count(net)}  sizes={cfg.sizes}")
+    print(f"device={device}  params={param_count(net)}  sizes={cfg.sizes}", flush=True)
+    print(f"run dir: {run_dir}", flush=True)
     best_score = -1.0
 
     for it in range(cfg.iterations):
@@ -96,7 +106,9 @@ def train(cfg: TrainConfig) -> None:
         for _ in range(cfg.games_per_iter):
             size = int(rng.choice(cfg.sizes))
             sp_stats.append(
-                self_play_game(evaluator, rng, mcts_cfg, size, buffer, cfg.temp_moves, cfg.move_cap)
+                self_play_game(
+                    evaluator, rng, mcts_cfg, size, buffer, normalizer, cfg.temp_moves, cfg.move_cap
+                )
             )
         sp_time = time.time() - t0
 
@@ -108,10 +120,11 @@ def train(cfg: TrainConfig) -> None:
         if ready:
             for _ in range(cfg.train_steps):
                 size = int(rng.choice(ready))
-                states, pol, val = buffer.sample(cfg.train_batch, rng, size)
+                states, pol, raw_scores = buffer.sample(cfg.train_batch, rng, size)
                 x = torch.from_numpy(encode_batch(states)).to(device)
                 target_p = torch.from_numpy(pol).to(device)
-                target_v = torch.from_numpy(val).to(device)
+                # Alvo de valor padronizado com os μ,σ correntes (bem espalhado em [0,1]).
+                target_v = torch.from_numpy(normalizer.normalize_array(raw_scores, size)).to(device)
                 logits, value = net(x)
                 loss_v = F.mse_loss(value, target_v)
                 loss_p = -(target_p * F.log_softmax(logits, dim=1)).sum(1).mean()
@@ -126,7 +139,7 @@ def train(cfg: TrainConfig) -> None:
         # --- 3. EVAL + CHECKPOINT ---
         m = evaluate_net(
             net, device, rng, cfg.eval_size, cfg.eval_games, cfg.eval_sims, cfg.c_puct,
-            cfg.mcts_batch, cfg.move_cap,
+            cfg.mcts_batch, cfg.move_cap, normalizer,
         )
         tag = "rollout" if use_rollout else "net"
         print(
@@ -134,18 +147,43 @@ def train(cfg: TrainConfig) -> None:
             f"score~{_mean(sp_stats, lambda s: s.score):.0f} "
             f"tile~{1 << round(_mean(sp_stats, lambda s: s.max_exponent))} {sp_time:.0f}s | "
             f"buf={buffer.total()} steps={n_steps} loss={avg[0]:.3f}(v{avg[1]:.3f}/p{avg[2]:.3f}) | "
-            f"EVAL score={m.mean_score:.0f} 2048={m.reach_2048_rate:.0%} best={m.best_tile}"
+            f"EVAL score={m.mean_score:.0f} 2048={m.reach_2048_rate:.0%} best={m.best_tile}",
+            flush=True,
         )
 
+        # Registro estruturado por iteração (uma linha JSON; flush → sobrevive a
+        # crash e é legível ao vivo mesmo com stdout buferizado).
+        record = {
+            "iter": it,
+            "phase": tag,
+            "selfplay_mean_score": _mean(sp_stats, lambda s: s.score),
+            "selfplay_mean_max_exponent": _mean(sp_stats, lambda s: s.max_exponent),
+            "selfplay_best_tile": 1 << max((s.max_exponent for s in sp_stats), default=0),
+            "selfplay_seconds": sp_time,
+            "buffer_total": buffer.total(),
+            "train_steps": n_steps,
+            "loss": avg[0],
+            "loss_value": avg[1],
+            "loss_policy": avg[2],
+            "eval_mean_score": m.mean_score,
+            "eval_best_tile": m.best_tile,
+            "eval_reach_2048": m.reach_2048_rate,
+            "eval_reach_4096": m.reach_4096_rate,
+            "eval_tile_hist": m.tile_hist,
+        }
+        with metrics_path.open("a") as fh:
+            fh.write(json.dumps(record) + "\n")
+
         ckpt = {"net": net.state_dict(), "cfg": asdict(cfg), "iter": it, "eval_mean_score": m.mean_score}
-        torch.save(ckpt, CKPT_DIR / "latest.pt")
+        torch.save(ckpt, run_dir / "latest.pt")
         if m.mean_score > best_score:
             best_score = m.mean_score
-            torch.save(ckpt, CKPT_DIR / "best.pt")
+            torch.save(ckpt, run_dir / "best.pt")
 
-    onnx_path = CKPT_DIR / "model.onnx"
+    onnx_path = run_dir / "model.onnx"
     export_onnx(net, str(onnx_path), example_size=cfg.sizes[0])
-    print(f"exported ONNX -> {onnx_path}")
+    print(f"exported ONNX -> {onnx_path}", flush=True)
+    print(f"metrics log   -> {metrics_path}", flush=True)
 
 
 def _parse() -> TrainConfig:

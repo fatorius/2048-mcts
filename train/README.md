@@ -22,7 +22,26 @@ Python **3.12** (mais maduro para MPS que o 3.14); PyTorch 2.13 com MPS.
 .venv/bin/python -m pytest                         # testes (paridade + unidade)
 ```
 
-Saídas em `checkpoints/`: `latest.pt`, `best.pt` (por score de eval), `model.onnx`.
+Cada run cria um diretório autocontido `checkpoints/run_<timestamp>/` com:
+
+| Arquivo | Conteúdo |
+|---|---|
+| `config.json` | Hiperparâmetros do run + device. |
+| `metrics.jsonl` | **Uma linha JSON por iteração** (score self-play/eval, perdas v/p, taxa 2048/4096, histograma de peças, tempo). Gravado com flush → sobrevive a crash e é legível ao vivo. |
+| `latest.pt`, `best.pt` | Checkpoints (best por score de eval). |
+| `model.onnx` | Modelo exportado (arquivo único, pesos embutidos). |
+
+Para trazer os resultados de volta, basta compactar a pasta `run_<timestamp>/`.
+Análise rápida do log:
+
+```bash
+python - <<'PY'
+import json
+for line in open("checkpoints/run_XXXX/metrics.jsonl"):
+    r = json.loads(line)
+    print(r["iter"], r["eval_mean_score"], r["eval_best_tile"], r["eval_reach_2048"])
+PY
+```
 
 ## Arquitetura do loop
 
