@@ -1,122 +1,76 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useGameController, type Status } from './game/useGameController';
+import { Board } from './ui/Board';
+import { VisitStats } from './ui/VisitStats';
+import { Controls } from './ui/Controls';
+import { maxExponent } from './core';
+import './App.css';
+
+const STATUS_LABEL: Record<Status, string> = {
+  loading: 'Loading…',
+  idle: 'Ready',
+  thinking: 'Thinking…',
+  playing: 'Playing',
+  gameover: 'Game over',
+};
 
 function App() {
-  const [count, setCount] = useState(0)
+  const c = useGameController();
+  const maxTile = c.state ? 1 << maxExponent(c.state) : 0;
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div className="app">
+      <header className="app-header">
+        <h1>2048 · MCTS</h1>
+        <p className="subtitle">
+          Busca pura (rollouts aleatórios) — a janela de depuração da Fase 1
+        </p>
+      </header>
 
-      <div className="ticks"></div>
+      <main className="layout">
+        <section className="board-col">
+          {c.state ? <Board state={c.state} /> : <div className="board-loading">Loading…</div>}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+          <div className="game-stats">
+            <div className="stat">
+              <span className="stat-k">Score</span>
+              <span className="stat-v">{c.state?.score ?? 0}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-k">Max tile</span>
+              <span className="stat-v">{maxTile}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-k">Moves</span>
+              <span className="stat-v">{c.moves}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-k">Status</span>
+              <span className={`stat-v status ${c.status}`}>{STATUS_LABEL[c.status]}</span>
+            </div>
+          </div>
+        </section>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+        <aside className="side">
+          <Controls c={c} />
+
+          <div className="panel">
+            <div className="panel-head">
+              <h2>MCTS visit stats</h2>
+              <span className="panel-meta">
+                {c.lastElapsedMs != null ? `${c.lastElapsedMs.toFixed(1)} ms` : '—'} ·{' '}
+                {c.config.simulations} sims
+              </span>
+            </div>
+            <VisitStats result={c.result} />
+            <p className="panel-note">
+              A barra é a distribuição de visitas (a “política do MCTS”). Q = valor médio, P =
+              prior. A direção destacada é a jogada escolhida; direções apagadas são ilegais.
+            </p>
+          </div>
+        </aside>
+      </main>
+    </div>
+  );
 }
 
-export default App
+export default App;
