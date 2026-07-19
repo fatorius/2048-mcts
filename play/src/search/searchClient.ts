@@ -1,16 +1,23 @@
 // Wrapper de main thread sobre o search worker, com API baseada em Promise.
 
 import type { GameState, SearchResult } from '../core';
-import type { WorkerRequest, WorkerResponse } from './protocol';
+import type { EvaluatorMode, WorkerRequest, WorkerResponse } from './protocol';
 
 export interface SearchOutcome {
   readonly result: SearchResult;
   readonly elapsedMs: number;
 }
 
+export interface NetLoadResult {
+  readonly ok: boolean;
+  readonly backend?: string;
+  readonly error?: string;
+}
+
 export class SearchClient {
   private worker: Worker;
   private pending = new Map<number, (o: SearchOutcome) => void>();
+  private netLoadResolve: ((r: NetLoadResult) => void) | null = null;
   private nextId = 1;
 
   constructor(seed: number) {
@@ -23,6 +30,9 @@ export class SearchClient {
           this.pending.delete(msg.id);
           resolve({ result: msg.result, elapsedMs: msg.elapsedMs });
         }
+      } else if (msg.type === 'netLoaded') {
+        this.netLoadResolve?.({ ok: msg.ok, backend: msg.backend, error: msg.error });
+        this.netLoadResolve = null;
       }
     };
     this.post({ type: 'init', seed });
@@ -33,7 +43,20 @@ export class SearchClient {
     this.post({ type: 'init', seed });
   }
 
-  search(state: GameState, simulations: number, cPuct: number): Promise<SearchOutcome> {
+  /** Carrega o modelo ONNX no worker (uma vez). Resolve com o backend efetivo. */
+  loadNet(modelUrl: string): Promise<NetLoadResult> {
+    return new Promise<NetLoadResult>((resolve) => {
+      this.netLoadResolve = resolve;
+      this.post({ type: 'loadNet', modelUrl });
+    });
+  }
+
+  search(
+    state: GameState,
+    simulations: number,
+    cPuct: number,
+    mode: EvaluatorMode,
+  ): Promise<SearchOutcome> {
     const id = this.nextId++;
     return new Promise<SearchOutcome>((resolve) => {
       this.pending.set(id, resolve);
@@ -45,6 +68,7 @@ export class SearchClient {
         score: state.score,
         simulations,
         cPuct,
+        mode,
       });
     });
   }

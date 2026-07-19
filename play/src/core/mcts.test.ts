@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Evaluator, GameState } from './types';
-import { runMcts } from './mcts';
+import { runMcts, runMctsAsync } from './mcts';
 import { makeRandomRolloutEvaluator, normalizeScore } from './evaluate';
 import { mulberry32 } from './rng';
 
@@ -78,6 +78,50 @@ describe('runMcts — invariantes da busca', () => {
     const best = res.bestAction as number;
     expect(res.legal[best]).toBe(true);
     expect(Number.isFinite(res.qValues[best])).toBe(true);
+  });
+});
+
+describe('runMctsAsync — paridade com a busca síncrona', () => {
+  it('produz visitas idênticas ao runMcts com o mesmo avaliador e seed', async () => {
+    const s = state([
+      [1, 1, 2, 0],
+      [0, 2, 0, 0],
+      [3, 0, 0, 1],
+      [0, 0, 0, 0],
+    ]);
+    const asyncUniform = async () => ({ policy: [0.25, 0.25, 0.25, 0.25], value: 0.5 });
+    const sync = runMcts(s, {
+      simulations: 300,
+      cPuct: 1.5,
+      evaluator: uniform,
+      rng: mulberry32(42),
+    });
+    const asyncRes = await runMctsAsync(s, {
+      simulations: 300,
+      cPuct: 1.5,
+      evaluator: asyncUniform,
+      rng: mulberry32(42),
+    });
+    expect(asyncRes.visits).toEqual(sync.visits);
+    expect(asyncRes.bestAction).toBe(sync.bestAction);
+  });
+
+  it('respeita invariantes (soma == sims, só legais, terminal → -1)', async () => {
+    const s = state([
+      [1, 2, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+    ]);
+    const asyncUniform = async () => ({ policy: [0.25, 0.25, 0.25, 0.25], value: 0.5 });
+    const res = await runMctsAsync(s, {
+      simulations: 128,
+      cPuct: 1.5,
+      evaluator: asyncUniform,
+      rng: mulberry32(1),
+    });
+    expect(res.visits.reduce((a, b) => a + b, 0)).toBe(128);
+    for (let a = 0; a < 4; a++) if (!res.legal[a]) expect(res.visits[a]).toBe(0);
   });
 });
 

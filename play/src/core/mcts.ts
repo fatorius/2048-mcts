@@ -14,7 +14,7 @@
 // núcleo abaixo é idêntico com rollout stub (Fase 1) ou rede (Fase 3/4).
 // ============================================================================
 
-import type { Action, Evaluator, GameState } from './types';
+import type { Action, Evaluation, Evaluator, GameState } from './types';
 import { ACTIONS } from './types';
 import { type RNG } from './rng';
 import { applyMove, isTerminal, spawnOutcomes, withSpawn, type SpawnOutcome } from './board';
@@ -110,8 +110,7 @@ export interface SearchResult {
 // Núcleo da busca
 // ----------------------------------------------------------------------------
 
-function expand(node: DecisionNode, evaluator: Evaluator): number {
-  const evaluation = evaluator(node.state);
+function applyEvaluation(node: DecisionNode, evaluation: Evaluation): number {
   const policy = evaluation.policy;
   for (const a of ACTIONS) {
     node.P[a] = policy[a] ?? 0;
@@ -119,6 +118,10 @@ function expand(node: DecisionNode, evaluator: Evaluator): number {
   }
   node.expanded = true;
   return evaluation.value;
+}
+
+function expand(node: DecisionNode, evaluator: Evaluator): number {
+  return applyEvaluation(node, evaluator(node.state));
 }
 
 function selectAction(node: DecisionNode, cPuct: number): Action {
@@ -223,26 +226,30 @@ export function runMcts(rootState: GameState, config: MctsConfig): SearchResult 
   const terminalValue = config.terminalValue ?? ((s: GameState) => normalizeScore(s.score));
   const root = createDecision(rootState);
 
-  if (root.terminal) {
-    return {
-      visits: [0, 0, 0, 0],
-      qValues: [0, 0, 0, 0],
-      priors: [0, 0, 0, 0],
-      legal: [false, false, false, false],
-      bestAction: -1,
-      simulations: 0,
-    };
-  }
+  if (root.terminal) return terminalResult();
 
   expand(root, config.evaluator);
   for (let s = 0; s < config.simulations; s++) {
     simulate(root, config.evaluator, config.cPuct, config.rng, terminalValue);
   }
+  return collectResult(root, config.simulations);
+}
 
+function terminalResult(): SearchResult {
+  return {
+    visits: [0, 0, 0, 0],
+    qValues: [0, 0, 0, 0],
+    priors: [0, 0, 0, 0],
+    legal: [false, false, false, false],
+    bestAction: -1,
+    simulations: 0,
+  };
+}
+
+function collectResult(root: DecisionNode, simulations: number): SearchResult {
   const visits = Array.from(root.N);
   const qValues = ACTIONS.map((a) => (root.N[a] > 0 ? root.W[a] / root.N[a] : 0));
   const priors = Array.from(root.P);
-
   let bestAction: Action | -1 = -1;
   let bestVisits = -1;
   for (const a of ACTIONS) {
@@ -251,13 +258,69 @@ export function runMcts(rootState: GameState, config: MctsConfig): SearchResult 
       bestAction = a;
     }
   }
+  return { visits, qValues, priors, legal: [...root.legal], bestAction, simulations };
+}
 
-  return {
-    visits,
-    qValues,
-    priors,
-    legal: [...root.legal],
-    bestAction,
-    simulations: config.simulations,
-  };
+// ----------------------------------------------------------------------------
+// Variante ASSÍNCRONA — para avaliadores assíncronos (ex.: rede via ORT-web na
+// Fase 4). Mesma semântica de busca; só a avaliação de folha vira `await`.
+// Reusa todos os helpers (seleção PUCT, chance nodes, backup).
+// ----------------------------------------------------------------------------
+
+export type AsyncEvaluator = (state: GameState) => Promise<Evaluation>;
+
+export interface AsyncMctsConfig {
+  readonly simulations: number;
+  readonly cPuct: number;
+  readonly evaluator: AsyncEvaluator;
+  readonly rng: RNG;
+  readonly terminalValue?: (state: GameState) => number;
+}
+
+async function simulateAsync(
+  root: DecisionNode,
+  evaluator: AsyncEvaluator,
+  cPuct: number,
+  rng: RNG,
+  terminalValue: (state: GameState) => number,
+): Promise<void> {
+  const path: PathStep[] = [];
+  let node = root;
+  let value: number;
+
+  for (;;) {
+    if (node.terminal) {
+      value = terminalValue(node.state);
+      break;
+    }
+    if (!node.expanded) {
+      value = applyEvaluation(node, await evaluator(node.state));
+      break;
+    }
+    const action = selectAction(node, cPuct);
+    path.push({ node, action });
+    const chance = getChance(node, action);
+    node = sampleOutcome(chance, rng);
+  }
+
+  for (const step of path) {
+    step.node.N[step.action] += 1;
+    step.node.W[step.action] += value;
+    step.node.totalN += 1;
+  }
+}
+
+export async function runMctsAsync(
+  rootState: GameState,
+  config: AsyncMctsConfig,
+): Promise<SearchResult> {
+  const terminalValue = config.terminalValue ?? ((s: GameState) => normalizeScore(s.score));
+  const root = createDecision(rootState);
+  if (root.terminal) return terminalResult();
+
+  applyEvaluation(root, await config.evaluator(rootState));
+  for (let s = 0; s < config.simulations; s++) {
+    await simulateAsync(root, config.evaluator, config.cPuct, config.rng, terminalValue);
+  }
+  return collectResult(root, config.simulations);
 }

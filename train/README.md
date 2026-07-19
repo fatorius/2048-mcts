@@ -20,7 +20,14 @@ Python **3.12** (mais maduro para MPS que o 3.14); PyTorch 2.13 com MPS.
 .venv/bin/python -m twenty48.train --iterations 40 --games-per-iter 24 --sims 100
 .venv/bin/python -m twenty48.train --sizes 4 5 6  # treino multi-tamanho
 .venv/bin/python -m pytest                         # testes (paridade + unidade)
+
+# Retomar do best.pt (restaura rede + otimizador + normalizador; buffer refaz):
+.venv/bin/python -m twenty48.train --resume --iterations 80 --sims 200   # run mais recente
+.venv/bin/python -m twenty48.train --resume checkpoints/run_XXXX --sims 200  # run específico
 ```
+
+`--resume` sem valor pega a run mais recente. A arquitetura (channels/blocks) é lida
+do checkpoint automaticamente. O warm-start é desligado ao retomar.
 
 Cada run cria um diretório autocontido `checkpoints/run_<timestamp>/` com:
 

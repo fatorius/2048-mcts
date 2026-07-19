@@ -9,8 +9,37 @@ export function Controls({ c }: { c: Controller }) {
   const over = c.status === 'gameover';
   const hasMove = !!c.result && c.result.bestAction !== -1;
 
+  const netLabel =
+    c.netStatus === 'loading'
+      ? 'carregando…'
+      : c.netStatus === 'ready'
+        ? (c.netBackend ?? 'ok')
+        : c.netStatus === 'error'
+          ? 'erro'
+          : '';
+
   return (
     <div className="controls">
+      <label className="field">
+        <span>
+          Avaliador {c.config.useNet && netLabel ? <b>· {netLabel}</b> : null}
+        </span>
+        <div className="seg">
+          <button
+            className={c.config.useNet ? 'seg-btn' : 'seg-btn active'}
+            onClick={() => c.setUseNet(false)}
+          >
+            Rollout
+          </button>
+          <button
+            className={c.config.useNet ? 'seg-btn active' : 'seg-btn'}
+            onClick={() => c.setUseNet(true)}
+          >
+            Rede (ONNX)
+          </button>
+        </div>
+      </label>
+
       <div className="btn-row">
         <button className="btn primary" onClick={c.newGame}>
           New game

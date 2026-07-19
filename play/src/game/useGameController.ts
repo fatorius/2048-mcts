@@ -9,15 +9,26 @@ import { initialState, isTerminal, mulberry32, step, type RNG } from '../core';
 import { SearchClient } from '../search/searchClient';
 
 export type Status = 'loading' | 'idle' | 'thinking' | 'playing' | 'gameover';
+export type NetStatus = 'off' | 'loading' | 'ready' | 'error';
+
+const MODEL_URL = '/model.onnx';
 
 export interface GameConfig {
   size: number;
   simulations: number;
   cPuct: number;
   delayMs: number;
+  /** Usar a rede ONNX (true) ou o stub de rollout (false) como avaliador. */
+  useNet: boolean;
 }
 
-const DEFAULT_CONFIG: GameConfig = { size: 4, simulations: 200, cPuct: 1.5, delayMs: 120 };
+const DEFAULT_CONFIG: GameConfig = {
+  size: 4,
+  simulations: 200,
+  cPuct: 1.5,
+  delayMs: 120,
+  useNet: false,
+};
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -28,6 +39,8 @@ export interface Controller {
   moves: number;
   lastElapsedMs: number | null;
   config: GameConfig;
+  netStatus: NetStatus;
+  netBackend: string | null;
   newGame: () => void;
   play: () => void;
   pause: () => void;
@@ -36,6 +49,7 @@ export interface Controller {
   setSimulations: (n: number) => void;
   setCPuct: (c: number) => void;
   setDelayMs: (d: number) => void;
+  setUseNet: (v: boolean) => void;
 }
 
 interface RenderState {
@@ -44,6 +58,8 @@ interface RenderState {
   status: Status;
   moves: number;
   lastElapsedMs: number | null;
+  netStatus: NetStatus;
+  netBackend: string | null;
 }
 
 const INITIAL_RENDER: RenderState = {
@@ -52,6 +68,8 @@ const INITIAL_RENDER: RenderState = {
   status: 'loading',
   moves: 0,
   lastElapsedMs: null,
+  netStatus: 'off',
+  netBackend: null,
 };
 
 export function useGameController(): Controller {
@@ -72,6 +90,9 @@ export function useGameController(): Controller {
   const statusRef = useRef<Status>('loading');
   const elapsedRef = useRef<number | null>(null);
   const movesRef = useRef(0);
+  const netReadyRef = useRef(false);
+  const netStatusRef = useRef<NetStatus>('off');
+  const netBackendRef = useRef<string | null>(null);
   const configRef = useRef(config);
   useEffect(() => {
     configRef.current = config;
@@ -85,6 +106,8 @@ export function useGameController(): Controller {
       status: statusRef.current,
       moves: movesRef.current,
       lastElapsedMs: elapsedRef.current,
+      netStatus: netStatusRef.current,
+      netBackend: netBackendRef.current,
     });
   }, []);
 
@@ -99,7 +122,9 @@ export function useGameController(): Controller {
   /** Busca a partir de `s`; devolve o SearchResult ou null se ficou obsoleto. */
   const searchFrom = useCallback(async (s: GameState, gen: number): Promise<SearchResult | null> => {
     const cfg = configRef.current;
-    const outcome = await clientRef.current!.search(s, cfg.simulations, cfg.cPuct);
+    // Modo rede só se o usuário ligou E o modelo já carregou; senão, rollout.
+    const mode = cfg.useNet && netReadyRef.current ? 'net' : 'rollout';
+    const outcome = await clientRef.current!.search(s, cfg.simulations, cfg.cPuct, mode);
     if (gen !== genRef.current) return null;
     resultRef.current = outcome.result;
     elapsedRef.current = outcome.elapsedMs;
@@ -221,6 +246,24 @@ export function useGameController(): Controller {
   const setCPuct = useCallback((cp: number) => setConfig((c) => ({ ...c, cPuct: cp })), []);
   const setDelayMs = useCallback((d: number) => setConfig((c) => ({ ...c, delayMs: d })), []);
 
+  const setUseNet = useCallback(
+    (v: boolean) => {
+      setConfig((c) => ({ ...c, useNet: v }));
+      // Carrega o modelo sob demanda na primeira vez que liga (ou após erro).
+      if (v && (netStatusRef.current === 'off' || netStatusRef.current === 'error')) {
+        netStatusRef.current = 'loading';
+        commit();
+        clientRef.current?.loadNet(MODEL_URL).then((r) => {
+          netReadyRef.current = r.ok;
+          netStatusRef.current = r.ok ? 'ready' : 'error';
+          netBackendRef.current = r.ok ? (r.backend ?? null) : (r.error ?? 'erro');
+          commit();
+        });
+      }
+    },
+    [commit],
+  );
+
   return {
     state: render.state,
     result: render.result,
@@ -228,6 +271,8 @@ export function useGameController(): Controller {
     moves: render.moves,
     lastElapsedMs: render.lastElapsedMs,
     config,
+    netStatus: render.netStatus,
+    netBackend: render.netBackend,
     newGame,
     play,
     pause,
@@ -236,5 +281,6 @@ export function useGameController(): Controller {
     setSimulations,
     setCPuct,
     setDelayMs,
+    setUseNet,
   };
 }

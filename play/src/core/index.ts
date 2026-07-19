@@ -3,6 +3,7 @@
 export * from './types';
 export * from './rng';
 export * from './board';
+export * from './encode';
 export * from './evaluate';
 export * from './mcts';
 export * from './agent';

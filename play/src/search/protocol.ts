@@ -4,6 +4,8 @@
 
 import type { SearchResult } from '../core';
 
+export type EvaluatorMode = 'rollout' | 'net';
+
 export interface SearchRequest {
   readonly type: 'search';
   readonly id: number;
@@ -12,6 +14,8 @@ export interface SearchRequest {
   readonly score: number;
   readonly simulations: number;
   readonly cPuct: number;
+  /** rollout (stub Fase 1) ou net (rede ONNX). */
+  readonly mode: EvaluatorMode;
 }
 
 export interface InitRequest {
@@ -19,10 +23,23 @@ export interface InitRequest {
   readonly seed: number;
 }
 
-export type WorkerRequest = SearchRequest | InitRequest;
+/** Carrega o modelo ONNX no worker (lazy, ao ligar o modo rede). */
+export interface LoadNetRequest {
+  readonly type: 'loadNet';
+  readonly modelUrl: string;
+}
+
+export type WorkerRequest = SearchRequest | InitRequest | LoadNetRequest;
 
 export interface ReadyResponse {
   readonly type: 'ready';
+}
+
+export interface NetLoadedResponse {
+  readonly type: 'netLoaded';
+  readonly ok: boolean;
+  readonly backend?: string;
+  readonly error?: string;
 }
 
 export interface SearchResponse {
@@ -33,4 +50,4 @@ export interface SearchResponse {
   readonly elapsedMs: number;
 }
 
-export type WorkerResponse = ReadyResponse | SearchResponse;
+export type WorkerResponse = ReadyResponse | NetLoadedResponse | SearchResponse;
