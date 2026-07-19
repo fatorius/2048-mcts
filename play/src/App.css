@@ -44,6 +44,7 @@
   --gap: 8px;
   display: grid;
   grid-template-columns: repeat(var(--n), 1fr);
+  grid-template-rows: repeat(var(--n), 1fr);
   gap: var(--gap);
   padding: var(--gap);
   background: var(--code-bg);
@@ -51,6 +52,11 @@
   border-radius: 12px;
   aspect-ratio: 1;
   width: 100%;
+}
+.cell-bg {
+  aspect-ratio: 1;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--border) 45%, transparent);
 }
 .tile {
   display: flex;
@@ -61,9 +67,10 @@
   font-variant-numeric: tabular-nums;
   aspect-ratio: 1;
   font-size: clamp(14px, calc(52px / var(--n) * 1.6), 34px);
-  transition:
-    background 0.12s ease,
-    color 0.12s ease;
+  z-index: 1;
+  /* passo entre células = largura da peça (100%) + o gap */
+  --step-x: calc((100% + var(--gap)) * var(--dx, 0));
+  --step-y: calc((100% + var(--gap)) * var(--dy, 0));
 }
 .tile[data-len='4'] {
   font-size: clamp(12px, calc(44px / var(--n) * 1.6), 28px);
@@ -72,8 +79,60 @@
 .tile[data-len='6'] {
   font-size: clamp(10px, calc(36px / var(--n) * 1.6), 22px);
 }
-.tile.empty {
-  background: color-mix(in srgb, var(--border) 45%, transparent);
+
+/* Peça deslizando: começa deslocada na origem e vai até a posição natural. */
+.anim-slide {
+  animation: tile-slide 130ms ease-out;
+}
+@keyframes tile-slide {
+  from {
+    transform: translate(var(--step-x), var(--step-y));
+  }
+  to {
+    transform: none;
+  }
+}
+/* Fusão: desliza a partir da origem mais distante e dá um pop no fim. */
+.anim-merge {
+  animation: tile-merge 180ms ease-out;
+  z-index: 2;
+}
+@keyframes tile-merge {
+  0% {
+    transform: translate(var(--step-x), var(--step-y));
+  }
+  62% {
+    transform: none;
+  }
+  80% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: none;
+  }
+}
+/* Peça nova: aparece com pop (escala 0 → 1). */
+.anim-spawn {
+  animation: tile-pop 180ms ease-out;
+  z-index: 2;
+}
+@keyframes tile-pop {
+  0% {
+    transform: scale(0);
+  }
+  70% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .anim-slide,
+  .anim-merge,
+  .anim-spawn {
+    animation: none;
+  }
 }
 .board-loading {
   aspect-ratio: 1;

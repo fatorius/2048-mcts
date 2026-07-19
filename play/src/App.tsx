@@ -28,7 +28,16 @@ function App() {
 
       <main className="layout">
         <section className="board-col">
-          {c.state ? <Board state={c.state} /> : <div className="board-loading">Loading…</div>}
+          {c.state ? (
+            <Board
+              state={c.state}
+              prevCells={c.prevCells}
+              action={c.lastAction}
+              moveId={c.moves}
+            />
+          ) : (
+            <div className="board-loading">Loading…</div>
+          )}
 
           <div className="game-stats">
             <div className="stat">

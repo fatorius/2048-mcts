@@ -129,6 +129,46 @@ export function applyMove(state: GameState, action: Action): MoveResult {
   return { cells, gained, moved };
 }
 
+/** Movimento de uma peça que sobrevive ao deslize (para animação de UI). */
+export interface TileMove {
+  /** Célula de origem (a mais distante, no caso de fusão) — de onde desliza. */
+  readonly from: number;
+  /** Célula de destino. */
+  readonly to: number;
+  /** Expoente resultante (já +1 em fusões). */
+  readonly exp: number;
+  /** Se este destino é resultado de uma fusão. */
+  readonly merged: boolean;
+}
+
+/**
+ * Rastreia, para cada peça pós-deslize, de onde ela veio. Mesma lógica de
+ * `applyMove` (sem spawn), mas retornando o mapeamento origem→destino que a UI
+ * usa para animar. Não é usado pela busca.
+ */
+export function slideTiles(cells: Uint8Array, size: number, action: Action): TileMove[] {
+  const moves: TileMove[] = [];
+  for (const line of lineIndices(size, action)) {
+    const entries: { cell: number; exp: number }[] = [];
+    for (const idx of line) if (cells[idx] !== 0) entries.push({ cell: idx, exp: cells[idx] });
+    let write = 0;
+    let i = 0;
+    while (i < entries.length) {
+      const dest = line[write];
+      if (i + 1 < entries.length && entries[i + 1].exp === entries[i].exp) {
+        // Fusão: anima a partir da origem mais distante (a segunda na ordem).
+        moves.push({ from: entries[i + 1].cell, to: dest, exp: entries[i].exp + 1, merged: true });
+        i += 2;
+      } else {
+        moves.push({ from: entries[i].cell, to: dest, exp: entries[i].exp, merged: false });
+        i += 1;
+      }
+      write++;
+    }
+  }
+  return moves;
+}
+
 // ----------------------------------------------------------------------------
 // Consultas de estado
 // ----------------------------------------------------------------------------

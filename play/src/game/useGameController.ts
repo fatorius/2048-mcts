@@ -41,6 +41,10 @@ export interface Controller {
   config: GameConfig;
   netStatus: NetStatus;
   netBackend: string | null;
+  /** Board antes do último lance (para animação); null em nova partida. */
+  prevCells: Uint8Array | null;
+  /** Ação do último lance (para animação); -1 se nenhum. */
+  lastAction: Action | -1;
   newGame: () => void;
   play: () => void;
   pause: () => void;
@@ -60,6 +64,8 @@ interface RenderState {
   lastElapsedMs: number | null;
   netStatus: NetStatus;
   netBackend: string | null;
+  prevCells: Uint8Array | null;
+  lastAction: Action | -1;
 }
 
 const INITIAL_RENDER: RenderState = {
@@ -70,6 +76,8 @@ const INITIAL_RENDER: RenderState = {
   lastElapsedMs: null,
   netStatus: 'off',
   netBackend: null,
+  prevCells: null,
+  lastAction: -1,
 };
 
 export function useGameController(): Controller {
@@ -90,6 +98,8 @@ export function useGameController(): Controller {
   const statusRef = useRef<Status>('loading');
   const elapsedRef = useRef<number | null>(null);
   const movesRef = useRef(0);
+  const prevCellsRef = useRef<Uint8Array | null>(null);
+  const lastActionRef = useRef<Action | -1>(-1);
   const netReadyRef = useRef(false);
   const netStatusRef = useRef<NetStatus>('off');
   const netBackendRef = useRef<string | null>(null);
@@ -108,6 +118,8 @@ export function useGameController(): Controller {
       lastElapsedMs: elapsedRef.current,
       netStatus: netStatusRef.current,
       netBackend: netBackendRef.current,
+      prevCells: prevCellsRef.current,
+      lastAction: lastActionRef.current,
     });
   }, []);
 
@@ -140,6 +152,9 @@ export function useGameController(): Controller {
 
       const { state: next } = step(cur, r.bestAction as Action, rngRef.current);
       if (gen !== genRef.current) return false;
+      // Info para a animação: de onde as peças vieram + a direção.
+      prevCellsRef.current = cur.cells;
+      lastActionRef.current = r.bestAction as Action;
       stateRef.current = next;
       movesRef.current += 1;
 
@@ -171,6 +186,8 @@ export function useGameController(): Controller {
     resultRef.current = null;
     elapsedRef.current = null;
     movesRef.current = 0;
+    prevCellsRef.current = null; // nova partida: peças iniciais entram com pop
+    lastActionRef.current = -1;
     setStatus('thinking');
     void searchFrom(s0, gen).then((r) => {
       if (r) setStatus('idle');
@@ -273,6 +290,8 @@ export function useGameController(): Controller {
     config,
     netStatus: render.netStatus,
     netBackend: render.netBackend,
+    prevCells: render.prevCells,
+    lastAction: render.lastAction,
     newGame,
     play,
     pause,
