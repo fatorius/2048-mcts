@@ -27,7 +27,8 @@ Python **3.12** (mais maduro para MPS que o 3.14); PyTorch 2.13 com MPS.
 ```
 
 `--resume` sem valor pega a run mais recente. A arquitetura (channels/blocks) é lida
-do checkpoint automaticamente. O warm-start é desligado ao retomar.
+do checkpoint automaticamente. O warm-start **continua ligado** ao retomar (o gate
+se auto-corrige); use `--no-warm-start` para retomar direto em self-play da rede.
 
 Cada run cria um diretório autocontido `checkpoints/run_<timestamp>/` com:
 
@@ -36,7 +37,27 @@ Cada run cria um diretório autocontido `checkpoints/run_<timestamp>/` com:
 | `config.json` | Hiperparâmetros do run + device. |
 | `metrics.jsonl` | **Uma linha JSON por iteração** (score self-play/eval, perdas v/p, taxa 2048/4096, histograma de peças, tempo). Gravado com flush → sobrevive a crash e é legível ao vivo. |
 | `latest.pt`, `best.pt` | Checkpoints (best por score de eval). |
-| `model.onnx` | Modelo exportado (arquivo único, pesos embutidos). |
+| `model.onnx` | Modelo exportado ao FIM do run (rede final; arquivo único, pesos embutidos). |
+
+## Servir o modelo na plataforma web (Fase 4)
+
+O `model.onnx` só é gerado quando um run **termina**, e a partir da rede **final**.
+Para servir o **melhor** checkpoint (`best.pt`), ou exportar de um run interrompido,
+use o CLI de export — ele reconstrói a arquitetura da config salva, verifica
+`ORT == PyTorch` (aborta se não bater) e, com `--to-web`, copia para
+`play/public/model.onnx`:
+
+```bash
+# exporta o best.pt do run e faz o swap na plataforma web, tudo de uma vez
+.venv/bin/python -m twenty48.export_onnx --checkpoint checkpoints/run_XXXX --to-web
+
+.venv/bin/python -m twenty48.export_onnx --checkpoint checkpoints/run_XXXX/latest.pt --to-web  # rede final
+.venv/bin/python -m twenty48.export_onnx --checkpoint checkpoints/run_XXXX --out modelo.onnx    # só exporta
+```
+
+Não há conversão além do ONNX (o `onnxruntime-web` consome direto) e a paridade de
+encoding TS↔Python já é garantida. Depois do swap, recarregue a página do app e
+ligue o toggle **Rede (ONNX)**.
 
 Para trazer os resultados de volta, basta compactar a pasta `run_<timestamp>/`.
 Análise rápida do log:
