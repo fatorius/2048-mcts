@@ -72,12 +72,27 @@ class NetEvaluator:
         self.device = device
 
     def __call__(self, states: list[GameState]) -> tuple[np.ndarray, np.ndarray]:
+        from collections import defaultdict
+
         from .encode import encode_batch
 
         torch = self._torch
-        x = torch.from_numpy(encode_batch(states)).to(self.device)
-        with torch.no_grad():
-            logits, value = self.net(x)
-            pols = torch.softmax(logits, dim=1).float().cpu().numpy()
-            vals = value.float().cpu().numpy()
-        return pols.astype(np.float32), vals.astype(np.float32)
+        n = len(states)
+        pols = np.empty((n, 4), dtype=np.float32)
+        vals = np.empty(n, dtype=np.float32)
+        # Agrupa por tamanho: um lote pode misturar boards de n diferentes (driver
+        # paralelo em treino multi-tamanho). Um forward por tamanho.
+        groups: dict[int, list[int]] = defaultdict(list)
+        for i, s in enumerate(states):
+            groups[s.size].append(i)
+        for idxs in groups.values():
+            sub = [states[i] for i in idxs]
+            x = torch.from_numpy(encode_batch(sub)).to(self.device)
+            with torch.no_grad():
+                logits, value = self.net(x)
+                p = torch.softmax(logits, dim=1).float().cpu().numpy()
+                v = value.float().cpu().numpy()
+            for k, i in enumerate(idxs):
+                pols[i] = p[k]
+                vals[i] = v[k]
+        return pols, vals

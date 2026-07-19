@@ -25,6 +25,55 @@ class EvalMetrics:
     tile_hist: dict[int, int] = field(default_factory=dict)
 
 
+def evaluate_with(
+    evaluator,
+    rng: np.random.Generator,
+    size: int = 4,
+    games: int = 10,
+    sims: int = 100,
+    c_puct: float = 1.5,
+    batch_size: int = 32,
+    move_cap: int = 4000,
+    terminal_value_fn=None,
+    on_game=None,
+) -> EvalMetrics:
+    """Partidas gulosas (temp 0, sem noise) com um avaliador qualquer — usado
+    tanto para a rede quanto para a baseline de rollout do gate de warm-start.
+    `on_game(i, score, max_exponent, moves)` é chamado após cada partida (progresso)."""
+    cfg = MctsConfig(simulations=sims, c_puct=c_puct, batch_size=batch_size)
+    scores: list[int] = []
+    exps: list[int] = []
+    for i in range(games):
+        state = initial_state(size, rng)
+        moves = 0
+        while not is_terminal(state) and moves < move_cap:
+            result, _ = run_mcts(
+                state, evaluator, rng, cfg, add_noise=False, terminal_value_fn=terminal_value_fn
+            )
+            if result.best_action == -1:
+                break
+            action = select_move(result.visits, 0.0, rng)  # guloso
+            state, _ = step(state, action, rng)
+            moves += 1
+        scores.append(state.score)
+        exps.append(max_exponent(state))
+        if on_game is not None:
+            on_game(i, state.score, max_exponent(state), moves)
+
+    hist: dict[int, int] = {}
+    for e in exps:
+        tile = 1 << e
+        hist[tile] = hist.get(tile, 0) + 1
+    return EvalMetrics(
+        games=games,
+        mean_score=float(np.mean(scores)),
+        best_tile=1 << max(exps),
+        reach_2048_rate=float(np.mean([e >= 11 for e in exps])),
+        reach_4096_rate=float(np.mean([e >= 12 for e in exps])),
+        tile_hist=hist,
+    )
+
+
 def evaluate_net(
     net,
     device: str,
@@ -38,34 +87,7 @@ def evaluate_net(
     normalizer=None,
 ) -> EvalMetrics:
     net.eval()
-    evaluator = NetEvaluator(net, device)
-    cfg = MctsConfig(simulations=sims, c_puct=c_puct, batch_size=batch_size)
     tvf = normalizer.terminal_value_fn() if normalizer is not None else None
-
-    scores: list[int] = []
-    exps: list[int] = []
-    for _ in range(games):
-        state = initial_state(size, rng)
-        moves = 0
-        while not is_terminal(state) and moves < move_cap:
-            result, _ = run_mcts(state, evaluator, rng, cfg, add_noise=False, terminal_value_fn=tvf)
-            if result.best_action == -1:
-                break
-            action = select_move(result.visits, 0.0, rng)  # guloso
-            state, _ = step(state, action, rng)
-            moves += 1
-        scores.append(state.score)
-        exps.append(max_exponent(state))
-
-    hist: dict[int, int] = {}
-    for e in exps:
-        tile = 1 << e
-        hist[tile] = hist.get(tile, 0) + 1
-    return EvalMetrics(
-        games=games,
-        mean_score=float(np.mean(scores)),
-        best_tile=1 << max(exps),
-        reach_2048_rate=float(np.mean([e >= 11 for e in exps])),
-        reach_4096_rate=float(np.mean([e >= 12 for e in exps])),
-        tile_hist=hist,
+    return evaluate_with(
+        NetEvaluator(net, device), rng, size, games, sims, c_puct, batch_size, move_cap, tvf
     )

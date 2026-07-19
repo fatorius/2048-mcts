@@ -72,7 +72,8 @@ guiado pela rede.
 | `twenty48/board.py` | Motor 2048 — espelho de `board.ts` (paridade testada). |
 | `twenty48/encode.py` | Codificação 20×n×n (17 one-hot + 3 auxiliares). |
 | `twenty48/net.py` | Rede de 2 cabeças, agnóstica a `n` (tronco conv → GAP → value/policy). |
-| `twenty48/mcts.py` | MCTS com chance nodes + avaliação de folhas EM LOTE (virtual loss). |
+| `twenty48/mcts.py` | MCTS com chance nodes. `run_mcts` (lote c/ virtual loss) + `mcts_search_gen` (corrotina SEQUENCIAL = mesma busca do TS). |
+| `twenty48/parallel.py` | Self-play/eval por PARTIDAS PARALELAS: busca sequencial por partida (qualidade), folhas bateladas ENTRE partidas para a GPU (throughput). |
 | `twenty48/evaluators.py` | Fronteira `evaluate`: uniform / rollout / rede. |
 | `twenty48/self_play.py` | Gera uma partida e grava posições. |
 | `twenty48/buffer.py` | Replay buffer por tamanho. |

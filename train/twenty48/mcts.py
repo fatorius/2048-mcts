@@ -174,19 +174,71 @@ def _backup(path: list[tuple[DecisionNode, int]], value: float) -> None:
         node.total_n += 1
 
 
+def _apply_policy(node: DecisionNode, policy) -> None:
+    """Marca legalidade e fixa o prior (mascarado/renormalizado sobre as legais)."""
+    legal_mask = [apply_move(node.state, a)[2] for a in ACTIONS]
+    total = sum(policy[a] for a in ACTIONS if legal_mask[a])
+    for a in ACTIONS:
+        node.legal[a] = legal_mask[a]
+        node.P[a] = (policy[a] / total) if (legal_mask[a] and total > 0) else 0.0
+    node.expanded = True
+
+
 def _expand(nodes: list[DecisionNode], evaluator) -> None:
-    """Avalia folhas em lote e as expande (P mascarado/renormalizado por legalidade)."""
-    states = [nd.state for nd in nodes]
-    policies, values = evaluator(states)
+    """Avalia folhas em lote e as expande."""
+    policies, values = evaluator([nd.state for nd in nodes])
     for i, nd in enumerate(nodes):
-        legal_mask = [apply_move(nd.state, a)[2] for a in ACTIONS]
-        p = policies[i]
-        total = sum(p[a] for a in ACTIONS if legal_mask[a])
-        for a in ACTIONS:
-            nd.legal[a] = legal_mask[a]
-            nd.P[a] = (p[a] / total) if (legal_mask[a] and total > 0) else 0.0
-        nd.expanded = True
+        _apply_policy(nd, policies[i])
         nd.eval_value = float(values[i])
+
+
+def _collect_result(root: DecisionNode) -> SearchResult:
+    visits = list(root.N)
+    q_values = [(root.W[a] / root.N[a]) if root.N[a] > 0 else 0.0 for a in ACTIONS]
+    priors = list(root.P)
+    best_action, best_visits = -1, -1.0
+    for a in ACTIONS:
+        if root.legal[a] and root.N[a] > best_visits:
+            best_visits, best_action = root.N[a], a
+    return SearchResult(visits, q_values, priors, list(root.legal), best_action)
+
+
+def mcts_search_gen(root_state: GameState, config: MctsConfig, rng, add_noise=False, terminal_value_fn=None):
+    """Busca SEQUENCIAL como corrotina (mesma busca do TS — uma folha por simulação,
+    sem virtual loss). `yield`a o estado da folha a avaliar e recebe (policy, value)
+    via `.send()`; retorna o SearchResult ao terminar. O driver paralelo
+    (parallel.py) junta as folhas de VÁRIAS partidas num único forward de GPU —
+    ganhando throughput sem perder a qualidade da busca sequencial."""
+    tvf = terminal_value_fn if terminal_value_fn is not None else _terminal_value
+    root = DecisionNode(root_state)
+    if root.terminal:
+        return SearchResult([0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [False] * 4, -1)
+
+    policy, _ = yield root.state
+    _apply_policy(root, policy)
+    if add_noise:
+        _apply_dirichlet(root, config.dirichlet_alpha, config.dirichlet_eps, rng)
+
+    for _ in range(config.simulations):
+        path: list[tuple[DecisionNode, int]] = []
+        node = root
+        while True:
+            if node.terminal:
+                value = tvf(node.state)
+                break
+            if not node.expanded:
+                policy, value = yield node.state
+                _apply_policy(node, policy)
+                break
+            a = _select(node, config.c_puct)  # sem virtual loss (VL fica 0)
+            path.append((node, a))
+            node = _sample_outcome(_get_chance(node, a), rng)
+        for nd, a in path:
+            nd.N[a] += 1
+            nd.W[a] += value
+            nd.total_n += 1
+
+    return _collect_result(root)
 
 
 def _apply_dirichlet(root: DecisionNode, alpha: float, eps: float, rng: np.random.Generator) -> None:
@@ -237,14 +289,7 @@ def run_mcts(
         for leaf in leaves:
             leaf.pending = False
 
-    visits = list(root.N)
-    q_values = [(root.W[a] / root.N[a]) if root.N[a] > 0 else 0.0 for a in ACTIONS]
-    priors = list(root.P)
-    best_action, best_visits = -1, -1.0
-    for a in ACTIONS:
-        if root.legal[a] and root.N[a] > best_visits:
-            best_visits, best_action = root.N[a], a
-    return SearchResult(visits, q_values, priors, list(root.legal), best_action), root
+    return _collect_result(root), root
 
 
 def select_move(visits: list[float], temperature: float, rng: np.random.Generator) -> int:
