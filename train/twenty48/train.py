@@ -73,9 +73,20 @@ def _mean(xs, key):
     return float(np.mean([key(x) for x in xs])) if xs else 0.0
 
 
+RESUME_LATEST = "__latest__"
+
+
+def _latest_run_dir() -> Path:
+    runs = sorted(CKPT_DIR.glob("run_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not runs:
+        raise FileNotFoundError(f"nenhum run_* em {CKPT_DIR} para retomar")
+    return runs[0]
+
+
 def _resolve_resume(path: str) -> Path:
-    """Aceita um .pt direto ou uma pasta de run (usa best.pt dela)."""
-    p = Path(path)
+    """Aceita RESUME_LATEST (run mais recente), um .pt direto, ou uma pasta de run
+    (usa best.pt dela)."""
+    p = _latest_run_dir() if path == RESUME_LATEST else Path(path)
     if p.is_dir():
         p = p / "best.pt"
     if not p.exists():
@@ -85,6 +96,10 @@ def _resolve_resume(path: str) -> Path:
 
 def train(cfg: TrainConfig, resume: str | None = None) -> None:
     device = pick_device()
+    # Resolve o resume ANTES de criar o novo run_dir (senão o novo, recém-criado,
+    # seria o "mais recente").
+    ckpt_path = _resolve_resume(resume) if resume else None
+
     # Diretório autocontido por run: config + log de métricas + checkpoints + onnx.
     run_dir = CKPT_DIR / f"run_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -97,8 +112,7 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
     # com os pesos salvos.
     ckpt = None
     resumed_from = None
-    if resume:
-        ckpt_path = _resolve_resume(resume)
+    if ckpt_path is not None:
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         saved = ckpt.get("cfg", {})
         cfg.channels = saved.get("channels", cfg.channels)
@@ -239,7 +253,13 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
 def _parse() -> tuple[TrainConfig, str | None]:
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true", help="run tiny config to validate pipeline")
-    p.add_argument("--resume", type=str, help="run dir ou .pt para retomar (usa best.pt da pasta)")
+    p.add_argument(
+        "--resume",
+        type=str,
+        nargs="?",
+        const=RESUME_LATEST,
+        help="retoma do best.pt. Sem valor = run mais recente; ou passe run dir / .pt",
+    )
     p.add_argument("--iterations", type=int)
     p.add_argument("--games-per-iter", type=int)
     p.add_argument("--sims", type=int)
