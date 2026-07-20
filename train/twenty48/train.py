@@ -59,8 +59,8 @@ class TrainConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     buffer_per_size: int = 200_000
-    channels: int = 64
-    blocks: int = 4
+    channels: int = 128
+    blocks: int = 6
     eval_size: int = 4
     eval_games: int = 12
     eval_sims: int = 100
@@ -333,6 +333,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--warm-switch-frac", type=float, help="fração da baseline p/ abrir o gate")
     p.add_argument("--warm-max-iters", type=int, help="teto de iterações de warm-start")
     p.add_argument("--no-warm-start", action="store_true", help="começa direto no self-play da rede")
+    p.add_argument("--channels", type=int, help="canais da rede (treino do zero)")
+    p.add_argument("--blocks", type=int, help="blocos conv da rede (treino do zero)")
     p.add_argument("--seed", type=int)
     args = p.parse_args()
 
@@ -362,6 +364,10 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.warm_max_iters = args.warm_max_iters
     if args.no_warm_start:
         cfg.warm_start = False
+    if args.channels is not None:
+        cfg.channels = args.channels
+    if args.blocks is not None:
+        cfg.blocks = args.blocks
     return cfg, args.resume
 
 
