@@ -1,7 +1,7 @@
 // Perfil de latência POR LANCE (não por partida) e decomposição do custo.
 //
 // Mede ms/lance variando as simulações, com dois avaliadores:
-//   - rollout : stub da Fase 1 (rollout aleatório até o fim) — CARO.
+//   - rollout : stub de rollout aleatório até o fim — CARO.
 //   - const   : avaliador O(1) (política uniforme + valor fixo). Aproxima a
 //               ESTRUTURA de custo de um eval de rede (busca + mecânica de board,
 //               SEM o forward pass). A diferença rollout-const = custo do rollout,

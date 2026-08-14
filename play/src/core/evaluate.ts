@@ -1,7 +1,7 @@
 // ============================================================================
-// Stub de `evaluate` da Fase 1 — prior uniforme + valor por rollout aleatório.
+// Stub de `evaluate` — prior uniforme + valor por rollout aleatório.
 //
-// Atrás da interface Evaluator (types.ts). Na Fase 3/4 a rede substitui isto
+// Atrás da interface Evaluator (types.ts). A rede treinada substitui isto
 // sem que o MCTS mude. O núcleo da busca nunca embute avaliação.
 // ============================================================================
 
@@ -54,7 +54,7 @@ export interface RolloutOptions {
 }
 
 /**
- * Constrói o Evaluator stub da Fase 1: política uniforme + valor = média de N
+ * Constrói o Evaluator stub: política uniforme + valor = média de N
  * rollouts aleatórios, normalizada para [0,1].
  */
 export function makeRandomRolloutEvaluator(rng: RNG, opts: RolloutOptions = {}): Evaluator {

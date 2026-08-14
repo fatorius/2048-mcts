@@ -22,7 +22,7 @@ function App() {
       <header className="app-header">
         <h1>2048 · MCTS</h1>
         <p className="subtitle">
-          Busca pura (rollouts aleatórios) — a janela de depuração da Fase 1
+          Busca guiada por rede (MCTS + ONNX) — a janela de depuração da busca
         </p>
       </header>
 

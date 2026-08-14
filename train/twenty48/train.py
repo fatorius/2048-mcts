@@ -2,7 +2,7 @@
 
 Um processo, um laço: gera partidas com MCTS guiado pela rede → replay buffer →
 passos de gradiente (valor MSE + política CE + L2) → rede melhor → dados melhores.
-Warm start: a iteração 0 gera dados com o MCTS-rollout da Fase 1 (a rede recém-
+Warm start: a iteração 0 gera dados com o MCTS-rollout puro (a rede recém-
 inicializada tem value head de ruído).
 
 Uso:

@@ -1,5 +1,5 @@
 // Search worker — roda o MCTS fora da main thread para manter a UI fluida.
-// Fase 4: além do stub de rollout (síncrono), carrega a rede ONNX e usa a busca
+// Além do stub de rollout (síncrono), carrega a rede ONNX e usa a busca
 // ASSÍNCRONA (runMctsAsync) quando o modo é 'net'. O núcleo é reusado sem mudança.
 
 import {

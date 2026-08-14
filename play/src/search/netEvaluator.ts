@@ -1,6 +1,6 @@
 // NetEvaluator — a rede treinada atrás da interface `evaluate`, via onnxruntime-web.
-// É o coração da Fase 4: o MCTS (assíncrono) passa a chamar a rede no lugar do
-// stub de rollout, sem que o núcleo da busca mude.
+// O MCTS (assíncrono) passa a chamar a rede no lugar do stub de rollout, sem
+// que o núcleo da busca mude.
 //
 // Inferência assíncrona (ORT sempre retorna Promise) → usada com runMctsAsync.
 // Roda no Worker; backend WebGPU de preferência, WASM como fallback.

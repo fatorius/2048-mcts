@@ -28,7 +28,7 @@ def uniform_evaluator(states: list[GameState]) -> tuple[np.ndarray, np.ndarray]:
 class RolloutEvaluator:
     """Valor = média de rollouts aleatórios até o fim (normalizado). Política
     uniforme. Usado só na iteração 0 (warm start) — reaproveita a força da busca
-    da Fase 1 em vez do value head aleatório de uma rede recém-inicializada."""
+    por rollout em vez do value head aleatório de uma rede recém-inicializada."""
 
     def __init__(self, rng: np.random.Generator, rollouts: int = 1):
         self.rng = rng

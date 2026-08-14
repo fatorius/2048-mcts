@@ -2,8 +2,8 @@ import type { SearchResult } from '../core';
 import { ACTION_NAMES } from '../core';
 
 // A janela para dentro da busca: quantas simulações cada direção recebeu, com Q
-// (valor médio) e P (prior). É o diagnóstico central da Fase 2 — e na Fase 3
-// passa a exibir a política prevista da rede lado a lado com estas visitas.
+// (valor médio) e P (prior). É o diagnóstico central da busca — exibe a
+// política prevista da rede lado a lado com estas visitas.
 
 const ARROWS = ['↑', '→', '↓', '←'] as const;
 

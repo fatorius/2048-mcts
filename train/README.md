@@ -1,7 +1,7 @@
-# Fase 3 — Treino: self-play + RL (estilo AlphaZero)
+# Treino: self-play + RL (estilo AlphaZero)
 
 Loop de RL offline em Python/PyTorch (MPS local) que destila a busca numa rede
-barata, e exporta o modelo para ONNX (insumo da Fase 4). O motor e o MCTS são um
+barata, e exporta o modelo para ONNX (consumido no browser). O motor e o MCTS são um
 **espelho fiel** do `core/` TS — verificado por testes de paridade.
 
 ## Setup
@@ -39,7 +39,7 @@ Cada run cria um diretório autocontido `checkpoints/run_<timestamp>/` com:
 | `latest.pt`, `best.pt` | Checkpoints (best por score de eval). |
 | `model.onnx` | Modelo exportado ao FIM do run (rede final; arquivo único, pesos embutidos). |
 
-## Servir o modelo na plataforma web (Fase 4)
+## Servir o modelo na plataforma web
 
 O `model.onnx` só é gerado quando um run **termina**, e a partir da rede **final**.
 Para servir o **melhor** checkpoint (`best.pt`), ou exportar de um run interrompido,
@@ -82,7 +82,7 @@ Um processo, um laço (`train.py`): a cada iteração —
 3. **Eval + checkpoint** (`evaluate.py`): partidas gulosas → score médio, taxa
    2048/4096 (o sinal de progresso — não há oponente).
 
-**Warm start:** a iteração 0 gera dados com o MCTS-rollout da Fase 1 (a rede
+**Warm start:** a iteração 0 gera dados com o MCTS-rollout puro (a rede
 recém-inicializada tem value head de ruído); a partir da iteração 1, self-play
 guiado pela rede.
 

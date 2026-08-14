@@ -1,6 +1,6 @@
 // Gerador pseudoaleatório seedável e determinístico.
 //
-// Necessário para reprodutibilidade: os testes de paridade da Fase 3 dependem de
+// Necessário para reprodutibilidade: os testes de paridade com o Python dependem de
 // que spawns e rollouts sejam replicáveis a partir de uma seed. Math.random não
 // é seedável, então threadamos uma instância de RNG por spawn/rollout/seleção.
 

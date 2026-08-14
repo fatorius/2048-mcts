@@ -11,7 +11,7 @@
 // arestas do caminho, sem alternância de sinal.
 //
 // A avaliação de folha entra SÓ pela interface Evaluator (fronteira neutra): o
-// núcleo abaixo é idêntico com rollout stub (Fase 1) ou rede (Fase 3/4).
+// núcleo abaixo é idêntico com rollout stub ou rede treinada.
 // ============================================================================
 
 import type { Action, Evaluation, Evaluator, GameState } from './types';
@@ -79,7 +79,7 @@ export interface MctsConfig {
   readonly simulations: number;
   /** Coeficiente de exploração do PUCT. */
   readonly cPuct: number;
-  /** Avaliador de folha (stub na Fase 1, rede na Fase 3/4). */
+  /** Avaliador de folha (stub de rollout ou rede treinada). */
   readonly evaluator: Evaluator;
   /** RNG para amostragem dos chance nodes. */
   readonly rng: RNG;
@@ -262,8 +262,8 @@ function collectResult(root: DecisionNode, simulations: number): SearchResult {
 }
 
 // ----------------------------------------------------------------------------
-// Variante ASSÍNCRONA — para avaliadores assíncronos (ex.: rede via ORT-web na
-// Fase 4). Mesma semântica de busca; só a avaliação de folha vira `await`.
+// Variante ASSÍNCRONA — para avaliadores assíncronos (ex.: rede via ORT-web).
+// Mesma semântica de busca; só a avaliação de folha vira `await`.
 // Reusa todos os helpers (seleção PUCT, chance nodes, backup).
 // ----------------------------------------------------------------------------
 

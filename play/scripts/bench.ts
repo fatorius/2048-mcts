@@ -1,5 +1,5 @@
 // ============================================================================
-// Critério de saída da Fase 1 (mensurável):
+// Critério de sanidade da busca (mensurável):
 // MCTS puro com rollouts aleatórios deve alcançar 2048 numa fração razoável das
 // partidas 4×4. Se não alcançar, há bug na busca — pegar agora, antes da rede.
 //

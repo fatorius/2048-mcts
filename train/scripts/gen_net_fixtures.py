@@ -1,4 +1,4 @@
-"""Gera fixtures de paridade da Fase 4 a partir do lado Python (fonte da verdade):
+"""Gera fixtures de paridade da rede a partir do lado Python (fonte da verdade):
 
   1. encoding: board -> tensor 20*n*n achatado (verifica o encoder TS).
   2. modelo:   board -> (policy_logits[4], value) via onnxruntime (verifica o

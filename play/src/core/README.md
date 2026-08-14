@@ -1,13 +1,13 @@
-# Núcleo (Fase 1) — motor 2048 + MCTS
+# Núcleo — motor 2048 + MCTS
 
 Módulo framework-agnóstico (sem React/DOM). É a peça reusada sem porte pela
-plataforma (Fase 2) e pelo deploy no cliente (Fase 4). Ver `plano_2048_mcts_rl.md`.
+plataforma web e pelo deploy no cliente. Ver `plano_2048_mcts_rl.md`.
 
 ## Contratos congelados
 
 Fixados **antes** do código, compartilhados entre a busca (JS/TS), a codificação
-de entrada da rede (Python, Fase 3) e a serialização entre runtimes. Definidos em
-[`types.ts`](./types.ts). Não alterar sem migrar todas as fases.
+de entrada da rede (Python) e a serialização entre runtimes. Definidos em
+[`types.ts`](./types.ts). Não alterar sem migrar todos os consumidores.
 
 1. **Estado do tabuleiro** — `GameState { size, cells, score }`. `cells` é um
    `Uint8Array` row-major de **expoentes** (`0` = vazio, `k` = tile `2^k`).
@@ -16,8 +16,8 @@ de entrada da rede (Python, Fase 3) e a serialização entre runtimes. Definidos
 2. **`evaluate(state) → { policy, value }`** (`Evaluator`) — fronteira neutra que
    o MCTS chama nas folhas. `policy`: prior sobre as 4 ações (soma 1). `value`:
    qualidade em `[0,1]`, maior = melhor.
-   - Fase 1: prior uniforme + valor por rollout aleatório ([`evaluate.ts`](./evaluate.ts)).
-   - Fase 3/4: a rede substitui o stub **sem tocar o núcleo da busca**.
+   - Stub: prior uniforme + valor por rollout aleatório ([`evaluate.ts`](./evaluate.ts)).
+   - Rede: substitui o stub **sem tocar o núcleo da busca**.
 
 Ações (ordem canônica, igual à cabeça de política): `0=Up, 1=Right, 2=Down, 3=Left`.
 
@@ -30,7 +30,7 @@ Ações (ordem canônica, igual à cabeça de política): `0=Up, 1=Right, 2=Down
 | `board.ts` | Motor: `applyMove` (puro), spawn, terminal, `spawnOutcomes` (distribuição exata). |
 | `evaluate.ts` | Stub de `evaluate`: rollout aleatório + `normalizeScore`. |
 | `mcts.ts` | `runMcts` — busca com chance nodes explícitos e backup ponderado. |
-| `agent.ts` | `playGame` — encadeia buscas até o fim; `onStep` p/ visualização (Fase 2). |
+| `agent.ts` | `playGame` — encadeia buscas até o fim; `onStep` p/ visualização. |
 
 ## MCTS com chance nodes
 

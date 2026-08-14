@@ -2,8 +2,8 @@
 // Driver de partida — encadeia buscas MCTS até o fim do jogo.
 //
 // A cada estado: roda o MCTS, joga a ação mais visitada, spawna de verdade.
-// A Fase 2 reusa este loop expondo `onStep` para visualizar as visitas por
-// jogada; a Fase 3 o reusa para gerar dados de self-play.
+// A plataforma web reusa este loop expondo `onStep` para visualizar as visitas
+// por jogada; o treino o reusa para gerar dados de self-play.
 // ============================================================================
 
 import type { Evaluator, GameState } from './types';
@@ -20,7 +20,7 @@ export interface PlayConfig {
    */
   readonly makeEvaluator: (rng: RNG) => Evaluator;
   readonly terminalValue?: (state: GameState) => number;
-  /** Callback por jogada (Fase 2: visualização; depuração). */
+  /** Callback por jogada (visualização; depuração). */
   readonly onStep?: (state: GameState, result: SearchResult) => void;
   /** Teto de jogadas de segurança (evita loop infinito por bug). */
   readonly maxMoves?: number;

@@ -14,7 +14,7 @@ export interface SearchRequest {
   readonly score: number;
   readonly simulations: number;
   readonly cPuct: number;
-  /** rollout (stub Fase 1) ou net (rede ONNX). */
+  /** rollout (stub) ou net (rede ONNX). */
   readonly mode: EvaluatorMode;
 }
 

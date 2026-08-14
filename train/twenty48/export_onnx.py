@@ -1,4 +1,4 @@
-"""Exporta a rede treinada para ONNX — o insumo da Fase 4 (onnxruntime-web).
+"""Exporta a rede treinada para ONNX — o insumo do browser (onnxruntime-web).
 
 Move para CPU antes de exportar (o device de treino é ortogonal ao artefato: o
 .onnx sai idêntico ao de um treino em CUDA). Eixos dinâmicos em batch/altura/
@@ -35,7 +35,7 @@ def export_onnx(net: Net, path: str, example_size: int = 4, opset: int = 18) -> 
         },
         opset_version=opset,
         # Arquivo único (pesos embutidos) — sem sidecar .onnx.data, mais simples
-        # de servir no browser na Fase 4.
+        # de servir no browser.
         external_data=False,
     )
 
