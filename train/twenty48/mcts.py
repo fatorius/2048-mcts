@@ -160,17 +160,33 @@ def _descend(root: DecisionNode, c_puct: float, rng: np.random.Generator, termin
         a = _select(node, c_puct)
         node.VL[a] += 1
         node.total_vl += 1
-        path.append((node, a))
         chance = _get_chance(node, a)
+        path.append((node, a, chance.gained))
         node = _sample_outcome(chance, rng)
 
 
-def _backup(path: list[tuple[DecisionNode, int]], value: float) -> None:
-    for node, a in path:
+def _backup(path, value: float) -> None:
+    """Backup antigo (só valor da folha): usado quando não há value_transform
+    pronto — semântica de score-total. Aceita arestas (node, a, gained)."""
+    for node, a, _gained in path:
         node.VL[a] -= 1
         node.total_vl -= 1
         node.N[a] += 1
         node.W[a] += value
+        node.total_n += 1
+
+
+def _backup_rtg(path, raw_future: float, vt) -> None:
+    """Backup reward-to-go: cada aresta recebe o valor normalizado do reward-to-go
+    a partir daquele nó = renorm(Σ gained das arestas abaixo + reward-to-go bruto
+    da folha). Percorre folha→raiz acumulando as recompensas `gained`."""
+    cum = raw_future
+    for node, a, gained in reversed(path):
+        cum += gained
+        node.VL[a] -= 1
+        node.total_vl -= 1
+        node.N[a] += 1
+        node.W[a] += vt.renorm(cum)
         node.total_n += 1
 
 
@@ -203,13 +219,14 @@ def _collect_result(root: DecisionNode) -> SearchResult:
     return SearchResult(visits, q_values, priors, list(root.legal), best_action)
 
 
-def mcts_search_gen(root_state: GameState, config: MctsConfig, rng, add_noise=False, terminal_value_fn=None):
+def mcts_search_gen(root_state: GameState, config: MctsConfig, rng, add_noise=False, terminal_value_fn=None, value_transform=None):
     """Busca SEQUENCIAL como corrotina (mesma busca do TS — uma folha por simulação,
     sem virtual loss). `yield`a o estado da folha a avaliar e recebe (policy, value)
     via `.send()`; retorna o SearchResult ao terminar. O driver paralelo
     (parallel.py) junta as folhas de VÁRIAS partidas num único forward de GPU —
     ganhando throughput sem perder a qualidade da busca sequencial."""
     tvf = terminal_value_fn if terminal_value_fn is not None else _terminal_value
+    rtg = value_transform is not None and value_transform.ready
     root = DecisionNode(root_state)
     if root.terminal:
         return SearchResult([0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [False] * 4, -1)
@@ -220,23 +237,35 @@ def mcts_search_gen(root_state: GameState, config: MctsConfig, rng, add_noise=Fa
         _apply_dirichlet(root, config.dirichlet_alpha, config.dirichlet_eps, rng)
 
     for _ in range(config.simulations):
-        path: list[tuple[DecisionNode, int]] = []
+        path: list[tuple[DecisionNode, int, int]] = []
         node = root
+        terminal_leaf = False
+        net_value = 0.0
         while True:
             if node.terminal:
-                value = tvf(node.state)
+                terminal_leaf = True
                 break
             if not node.expanded:
-                policy, value = yield node.state
+                policy, net_value = yield node.state
                 _apply_policy(node, policy)
                 break
             a = _select(node, config.c_puct)  # sem virtual loss (VL fica 0)
-            path.append((node, a))
-            node = _sample_outcome(_get_chance(node, a), rng)
-        for nd, a in path:
-            nd.N[a] += 1
-            nd.W[a] += value
-            nd.total_n += 1
+            chance = _get_chance(node, a)
+            path.append((node, a, chance.gained))
+            node = _sample_outcome(chance, rng)
+        if rtg:
+            cum = 0.0 if terminal_leaf else value_transform.denorm(net_value)
+            for nd, a, gained in reversed(path):
+                cum += gained
+                nd.N[a] += 1
+                nd.W[a] += value_transform.renorm(cum)
+                nd.total_n += 1
+        else:
+            value = tvf(node.state) if terminal_leaf else net_value
+            for nd, a, _g in path:
+                nd.N[a] += 1
+                nd.W[a] += value
+                nd.total_n += 1
 
     return _collect_result(root)
 
@@ -257,8 +286,10 @@ def run_mcts(
     config: MctsConfig,
     add_noise: bool = False,
     terminal_value_fn=None,
+    value_transform=None,
 ) -> tuple[SearchResult, DecisionNode]:
     tvf = terminal_value_fn if terminal_value_fn is not None else _terminal_value
+    rtg = value_transform is not None and value_transform.ready
     root = DecisionNode(root_state)
     if root.terminal:
         return SearchResult([0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [False] * 4, -1), root
@@ -284,8 +315,12 @@ def run_mcts(
             _expand(leaves, evaluator)
 
         for path, leaf, tval in collected:
-            value = tval if tval is not None else leaf.eval_value  # type: ignore[union-attr]
-            _backup(path, value)
+            if rtg:
+                raw_future = 0.0 if leaf is None else value_transform.denorm(leaf.eval_value)
+                _backup_rtg(path, raw_future, value_transform)
+            else:
+                value = tval if tval is not None else leaf.eval_value  # type: ignore[union-attr]
+                _backup(path, value)
         for leaf in leaves:
             leaf.pending = False
 

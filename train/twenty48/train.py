@@ -58,6 +58,7 @@ class TrainConfig:
     train_batch: int = 256
     lr: float = 1e-3
     weight_decay: float = 1e-4
+    value_weight: float = 1.0  # peso do loss de valor: loss = loss_p + value_weight*loss_v
     buffer_per_size: int = 200_000
     channels: int = 128
     blocks: int = 6
@@ -232,7 +233,7 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
                 logits, value = net(x)
                 loss_v = F.mse_loss(value, target_v)
                 loss_p = -(target_p * F.log_softmax(logits, dim=1)).sum(1).mean()
-                loss = loss_v + loss_p
+                loss = loss_p + cfg.value_weight * loss_v
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
@@ -245,6 +246,7 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
         m = evaluate_parallel(
             NetEvaluator(net, device), rng, cfg.eval_size, cfg.eval_games, cfg.eval_sims,
             cfg.c_puct, cfg.move_cap, terminal_value_fn=normalizer.terminal_value_fn(),
+            value_transform=normalizer.transform(cfg.eval_size),
         )
         tag = "rollout" if using_rollout else "net"
         gate = f" [rollout base {rollout_baseline:.0f}]" if using_rollout else ""
@@ -336,6 +338,7 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--channels", type=int, help="canais da rede (treino do zero)")
     p.add_argument("--blocks", type=int, help="blocos conv da rede (treino do zero)")
     p.add_argument("--seed", type=int)
+    p.add_argument("--value-weight", type=float, help="peso do loss de valor (padrão 1.0)")
     args = p.parse_args()
 
     cfg = TrainConfig()
@@ -368,6 +371,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.channels = args.channels
     if args.blocks is not None:
         cfg.blocks = args.blocks
+    if args.value_weight is not None:
+        cfg.value_weight = args.value_weight
     return cfg, args.resume
 
 

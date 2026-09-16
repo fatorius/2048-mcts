@@ -44,7 +44,8 @@ def self_play_game(
 
     while not is_terminal(state) and moves < move_cap:
         result, _ = run_mcts(
-            state, evaluator, rng, mcts_cfg, add_noise=True, terminal_value_fn=terminal_value_fn
+            state, evaluator, rng, mcts_cfg, add_noise=True,
+            terminal_value_fn=terminal_value_fn, value_transform=normalizer.transform(size),
         )
         if result.best_action == -1:
             break
@@ -61,10 +62,14 @@ def self_play_game(
         state, _ = step(state, action, rng)
         moves += 1
 
-    # Guarda o score BRUTO; o alvo de valor padronizado é computado no treino com
-    # os μ,σ correntes. Atualiza a estatística móvel com o resultado desta partida.
+    # Alvo de valor = reward-to-go BRUTO (score final − score na posição): "quantos
+    # pontos ainda dá pra fazer daqui". Bem-posto p/ uma rede que só vê o tabuleiro
+    # (o score não está no input). O padrão sigmoide é computado no treino com os
+    # μ,σ correntes; a estatística móvel acompanha a distribuição de reward-to-go.
+    final = state.score
     for st, pol in pending:
-        buffer.add(size, st, pol, float(state.score))
-    normalizer.update(size, state.score)
+        rtg = float(final - st.score)
+        buffer.add(size, st, pol, rtg)
+        normalizer.update(size, rtg)
 
     return GameStats(size=size, score=state.score, max_exponent=max_exponent(state), moves=moves)

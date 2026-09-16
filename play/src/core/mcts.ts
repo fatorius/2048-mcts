@@ -74,6 +74,38 @@ function createDecision(state: GameState): DecisionNode {
 // Configuração e resultado
 // ----------------------------------------------------------------------------
 
+/**
+ * Transforma entre o valor normalizado da rede (sigmoide, [0,1]) e reward-to-go
+ * BRUTO (mesma unidade de score), para o backup reward-to-go somar as recompensas
+ * `gained` das arestas. Espelho de ValueTransform em twenty48/value_norm.py.
+ * Os μ,σ vêm do treino (value_norm.json, embarcado junto do model.onnx).
+ */
+export interface ValueTransform {
+  readonly ready: boolean;
+  /** valor normalizado [0,1] → reward-to-go bruto. */
+  denorm(v: number): number;
+  /** reward-to-go bruto → valor normalizado [0,1]. */
+  renorm(raw: number): number;
+}
+
+const VT_EPS = 1e-6;
+
+export function makeValueTransform(mu: number, sigma: number, minStd = 1): ValueTransform {
+  return {
+    ready: sigma >= minStd,
+    denorm(v: number): number {
+      const c = Math.min(1 - VT_EPS, Math.max(VT_EPS, v));
+      return mu + sigma * Math.log(c / (1 - c));
+    },
+    renorm(raw: number): number {
+      const z = (raw - mu) / sigma;
+      if (z <= -60) return 0;
+      if (z >= 60) return 1;
+      return 1 / (1 + Math.exp(-z));
+    },
+  };
+}
+
 export interface MctsConfig {
   /** Simulações por busca. */
   readonly simulations: number;
@@ -86,9 +118,15 @@ export interface MctsConfig {
   /**
    * Valor de um estado terminal. Padrão: normalizeScore (o valor verdadeiro de
    * um fim de jogo é seu score final normalizado — quantidade conhecida, não
-   * aprendida).
+   * aprendida). Usado só no backup antigo (sem valueTransform).
    */
   readonly terminalValue?: (state: GameState) => number;
+  /**
+   * Se presente e pronto, ativa o backup reward-to-go: cada aresta recebe
+   * renorm(Σ gained abaixo + reward-to-go bruto da folha). Necessário para
+   * reproduzir no browser um modelo treinado com reward-to-go.
+   */
+  readonly valueTransform?: ValueTransform;
 }
 
 export interface SearchResult {
@@ -186,6 +224,41 @@ function sampleOutcome(chance: ChanceNode, rng: RNG): DecisionNode {
 interface PathStep {
   node: DecisionNode;
   action: Action;
+  /** Pontos ganhos na aresta (para o backup reward-to-go). */
+  gained: number;
+}
+
+/**
+ * Retropropaga o resultado da simulação. Com `vt` pronto: backup reward-to-go —
+ * percorre folha→raiz acumulando as recompensas `gained` e credita cada aresta
+ * com renorm(Σ gained + reward-to-go bruto da folha), folha terminal = 0. Sem
+ * `vt`: backup antigo (só o valor da folha). Espelho de mcts.py.
+ */
+function backup(
+  path: PathStep[],
+  terminalLeaf: boolean,
+  netValue: number,
+  leafState: GameState,
+  terminalValue: (state: GameState) => number,
+  vt?: ValueTransform,
+): void {
+  if (vt && vt.ready) {
+    let cum = terminalLeaf ? 0 : vt.denorm(netValue);
+    for (let i = path.length - 1; i >= 0; i--) {
+      cum += path[i].gained;
+      const step = path[i];
+      step.node.N[step.action] += 1;
+      step.node.W[step.action] += vt.renorm(cum);
+      step.node.totalN += 1;
+    }
+    return;
+  }
+  const value = terminalLeaf ? terminalValue(leafState) : netValue;
+  for (const step of path) {
+    step.node.N[step.action] += 1;
+    step.node.W[step.action] += value;
+    step.node.totalN += 1;
+  }
 }
 
 function simulate(
@@ -194,31 +267,29 @@ function simulate(
   cPuct: number,
   rng: RNG,
   terminalValue: (state: GameState) => number,
+  vt?: ValueTransform,
 ): void {
   const path: PathStep[] = [];
   let node = root;
-  let value: number;
+  let terminalLeaf = false;
+  let netValue = 0;
 
   for (;;) {
     if (node.terminal) {
-      value = terminalValue(node.state);
+      terminalLeaf = true;
       break;
     }
     if (!node.expanded) {
-      value = expand(node, evaluator);
+      netValue = expand(node, evaluator);
       break;
     }
     const action = selectAction(node, cPuct);
-    path.push({ node, action });
     const chance = getChance(node, action);
+    path.push({ node, action, gained: chance.gained });
     node = sampleOutcome(chance, rng);
   }
 
-  for (const step of path) {
-    step.node.N[step.action] += 1;
-    step.node.W[step.action] += value;
-    step.node.totalN += 1;
-  }
+  backup(path, terminalLeaf, netValue, node.state, terminalValue, vt);
 }
 
 /** Roda a busca a partir de `rootState` e retorna as estatísticas de visita. */
@@ -230,7 +301,7 @@ export function runMcts(rootState: GameState, config: MctsConfig): SearchResult 
 
   expand(root, config.evaluator);
   for (let s = 0; s < config.simulations; s++) {
-    simulate(root, config.evaluator, config.cPuct, config.rng, terminalValue);
+    simulate(root, config.evaluator, config.cPuct, config.rng, terminalValue, config.valueTransform);
   }
   return collectResult(root, config.simulations);
 }
@@ -275,6 +346,7 @@ export interface AsyncMctsConfig {
   readonly evaluator: AsyncEvaluator;
   readonly rng: RNG;
   readonly terminalValue?: (state: GameState) => number;
+  readonly valueTransform?: ValueTransform;
 }
 
 async function simulateAsync(
@@ -283,31 +355,29 @@ async function simulateAsync(
   cPuct: number,
   rng: RNG,
   terminalValue: (state: GameState) => number,
+  vt?: ValueTransform,
 ): Promise<void> {
   const path: PathStep[] = [];
   let node = root;
-  let value: number;
+  let terminalLeaf = false;
+  let netValue = 0;
 
   for (;;) {
     if (node.terminal) {
-      value = terminalValue(node.state);
+      terminalLeaf = true;
       break;
     }
     if (!node.expanded) {
-      value = applyEvaluation(node, await evaluator(node.state));
+      netValue = applyEvaluation(node, await evaluator(node.state));
       break;
     }
     const action = selectAction(node, cPuct);
-    path.push({ node, action });
     const chance = getChance(node, action);
+    path.push({ node, action, gained: chance.gained });
     node = sampleOutcome(chance, rng);
   }
 
-  for (const step of path) {
-    step.node.N[step.action] += 1;
-    step.node.W[step.action] += value;
-    step.node.totalN += 1;
-  }
+  backup(path, terminalLeaf, netValue, node.state, terminalValue, vt);
 }
 
 export async function runMctsAsync(
@@ -320,7 +390,7 @@ export async function runMctsAsync(
 
   applyEvaluation(root, await config.evaluator(rootState));
   for (let s = 0; s < config.simulations; s++) {
-    await simulateAsync(root, config.evaluator, config.cPuct, config.rng, terminalValue);
+    await simulateAsync(root, config.evaluator, config.cPuct, config.rng, terminalValue, config.valueTransform);
   }
   return collectResult(root, config.simulations);
 }
