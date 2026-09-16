@@ -13,8 +13,37 @@ Por-tamanho porque scores de 6×6 >> 4×4.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
+
+_EPS = 1e-6
+
+
+@dataclass(frozen=True)
+class ValueTransform:
+    """Converte entre valor normalizado da rede (sigmoide, [0,1]) e reward-to-go
+    BRUTO (mesma unidade de score), para o backup reward-to-go do MCTS somar as
+    recompensas `gained` das arestas. `ready` = há spread suficiente (σ≥min_std);
+    quando falso, o MCTS cai no backup antigo (só valor da folha)."""
+
+    mu: float
+    sigma: float
+    ready: bool
+
+    def denorm(self, v: float) -> float:
+        """valor normalizado [0,1] → reward-to-go bruto (logit·σ + μ)."""
+        c = min(1.0 - _EPS, max(_EPS, v))
+        return self.mu + self.sigma * math.log(c / (1.0 - c))
+
+    def renorm(self, raw: float) -> float:
+        """reward-to-go bruto → valor normalizado [0,1] (sigmoide padronizada)."""
+        z = (raw - self.mu) / self.sigma
+        if z <= -60.0:
+            return 0.0
+        if z >= 60.0:
+            return 1.0
+        return 1.0 / (1.0 + math.exp(-z))
 
 
 class ValueNormalizer:
@@ -58,6 +87,12 @@ class ValueNormalizer:
             return np.full(len(scores), 0.5, dtype=np.float32)
         z = (np.asarray(scores, dtype=np.float64) - mu) / sigma
         return (1.0 / (1.0 + np.exp(-z))).astype(np.float32)
+
+    def transform(self, size: int) -> "ValueTransform":
+        """Adaptador por-tamanho para o backup reward-to-go do MCTS: converte
+        valor normalizado [0,1] ↔ reward-to-go bruto, com os μ,σ correntes."""
+        mu, sigma = self._mu_sigma(size)
+        return ValueTransform(mu, sigma, sigma >= self.min_std)
 
     def terminal_value_fn(self):
         """Fn para o MCTS avaliar folhas terminais na MESMA escala do alvo."""

@@ -40,9 +40,32 @@ def export_onnx(net: Net, path: str, example_size: int = 4, opset: int = 18) -> 
     )
 
 
+def export_value_norm(data: dict, out_path: Path) -> dict | None:
+    """Grava value_norm.json (μ,σ por tamanho) ao lado do modelo. O MCTS do
+    browser precisa desses stats p/ o backup reward-to-go (denorm/renorm). Sem
+    normalizador salvo (modelo legado) → não grava."""
+    import json
+
+    from .value_norm import ValueNormalizer
+
+    ns = data.get("normalizer")
+    if not ns:
+        return None
+    nz = ValueNormalizer()
+    nz.load_state_dict(ns)
+    sizes = {}
+    for size in sorted(nz._mean):
+        mu, sigma = nz._mu_sigma(size)
+        sizes[str(size)] = {"mu": mu, "sigma": sigma}
+    payload = {"minStd": nz.min_std, "sizes": sizes}
+    out_path.write_text(json.dumps(payload, indent=2))
+    return payload
+
+
 def export_checkpoint(ckpt: str, out: str) -> None:
     """Carrega um checkpoint (.pt ou pasta de run → best.pt) e exporta para ONNX,
-    reconstruindo a arquitetura a partir da config salva. Verifica com ORT."""
+    reconstruindo a arquitetura a partir da config salva. Verifica com ORT e grava
+    value_norm.json (μ,σ do reward-to-go) ao lado."""
     p = Path(ckpt)
     if p.is_dir():
         p = p / "best.pt"
@@ -52,7 +75,9 @@ def export_checkpoint(ckpt: str, out: str) -> None:
     net.load_state_dict(data["net"])
     export_onnx(net, out)
     _verify(net, out)
-    print(f"exportado: {p} (iter {data.get('iter')}, eval {data.get('eval_mean_score')}) -> {out}")
+    vn = export_value_norm(data, Path(out).with_name("value_norm.json"))
+    vn_msg = f" + value_norm.json ({vn['sizes']})" if vn else " (sem normalizador)"
+    print(f"exportado: {p} (iter {data.get('iter')}, eval {data.get('eval_mean_score')}) -> {out}{vn_msg}")
 
 
 def _verify(net: Net, onnx_path: str) -> None:
@@ -93,6 +118,10 @@ def _main() -> None:
     if args.to_web:
         WEB_MODEL.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(out, WEB_MODEL)
+        vn_src = Path(out).with_name("value_norm.json")
+        if vn_src.exists():
+            shutil.copyfile(vn_src, WEB_MODEL.parent / "value_norm.json")
+            print(f"servido: {vn_src} -> {WEB_MODEL.parent / 'value_norm.json'}")
         print(f"servido: {out} -> {WEB_MODEL}")
 
 

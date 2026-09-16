@@ -34,7 +34,7 @@ class _Slot:
     done: bool = False
 
 
-def _run_parallel(slots, evaluator, cfg, tvf, add_noise, temp_moves, move_cap, record, on_finish):
+def _run_parallel(slots, evaluator, cfg, tvf, add_noise, temp_moves, move_cap, record, on_finish, transform_fn=None):
     def _finish(slot: _Slot):
         slot.done = True
         slot.gen = None
@@ -76,7 +76,8 @@ def _run_parallel(slots, evaluator, cfg, tvf, add_noise, temp_moves, move_cap, r
             if is_terminal(slot.state) or slot.moves >= move_cap:
                 _finish(slot)
                 continue
-            slot.gen = mcts_search_gen(slot.state, cfg, slot.rng, add_noise, tvf)
+            vt = transform_fn(slot.size) if transform_fn is not None else None
+            slot.gen = mcts_search_gen(slot.state, cfg, slot.rng, add_noise, tvf, vt)
             _advance(slot, None)  # prime: primeiro yield (raiz)
 
         batch = [s for s in slots if s.gen is not None and s.pending is not None]
@@ -115,17 +116,23 @@ def play_games_parallel(
     stats: list[GameStats | None] = [None] * n_games
 
     def on_finish(slot: _Slot):
-        raw = float(slot.state.score)
+        # Alvo = reward-to-go bruto (final − score na posição); atualiza o
+        # normalizador com a distribuição de reward-to-go. Ver self_play.py.
+        final = float(slot.state.score)
         for st, pol in slot.records:
-            buffer.add(slot.size, st, pol, raw)
-        normalizer.update(slot.size, slot.state.score)
+            rtg = final - float(st.score)
+            buffer.add(slot.size, st, pol, rtg)
+            normalizer.update(slot.size, rtg)
         stats[slot.index] = GameStats(
             slot.size, slot.state.score, max_exponent(slot.state), slot.moves
         )
         if on_game is not None:
             on_game(slot.index, slot.state.score, max_exponent(slot.state), slot.moves)
 
-    _run_parallel(slots, evaluator, cfg, tvf, True, temp_moves, move_cap, record=True, on_finish=on_finish)
+    _run_parallel(
+        slots, evaluator, cfg, tvf, True, temp_moves, move_cap,
+        record=True, on_finish=on_finish, transform_fn=normalizer.transform,
+    )
     return [s for s in stats if s is not None]
 
 
@@ -138,6 +145,7 @@ def evaluate_parallel(
     c_puct: float = 1.5,
     move_cap: int = 4000,
     terminal_value_fn=None,
+    value_transform=None,
     on_game=None,
 ) -> EvalMetrics:
     """Partidas gulosas (temp 0, sem noise) em paralelo — rede ou rollout."""
@@ -151,7 +159,11 @@ def evaluate_parallel(
         if on_game is not None:
             on_game(slot.index, slot.state.score, exp, slot.moves)
 
-    _run_parallel(slots, evaluator, cfg, terminal_value_fn, False, 0, move_cap, record=False, on_finish=on_finish)
+    tfn = (lambda _s: value_transform) if value_transform is not None else None
+    _run_parallel(
+        slots, evaluator, cfg, terminal_value_fn, False, 0, move_cap,
+        record=False, on_finish=on_finish, transform_fn=tfn,
+    )
 
     scores = [s for s, _ in out]
     exps = [e for _, e in out]
