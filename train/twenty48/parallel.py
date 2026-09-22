@@ -88,12 +88,39 @@ def _run_parallel(slots, evaluator, cfg, tvf, add_noise, temp_moves, move_cap, r
             _advance(slot, (policies[k], values[k]))
 
 
-def _make_slots(n, sizes, rng):
+def load_start_pool(path) -> dict[int, list[GameState]]:
+    """Carrega um pool de posições iniciais (JSONL {size,cells,score}) agrupado por
+    tamanho. Usado p/ self-play de ENDGAME: começa as partidas de posições de
+    meio/fim de jogo em vez do tabuleiro vazio (foca o treino na fronteira)."""
+    import json
+
+    pool: dict[int, list[GameState]] = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            pool.setdefault(int(r["size"]), []).append(
+                GameState(int(r["size"]), tuple(r["cells"]), int(r["score"]))
+            )
+    return pool
+
+
+def _make_slots(n, sizes, rng, start_pool=None):
+    # Tamanho escolhido UNIFORMEMENTE entre `sizes` (equilíbrio por tamanho
+    # independe do pool ser desbalanceado); a posição inicial vem do pool daquele
+    # tamanho quando há, senão tabuleiro vazio.
     slots = []
     for i in range(n):
         size = int(rng.choice(sizes))
         grng = np.random.default_rng(int(rng.integers(1 << 62)))
-        slots.append(_Slot(index=i, size=size, rng=grng, state=initial_state(size, grng)))
+        if start_pool and start_pool.get(size):
+            bucket = start_pool[size]
+            state = bucket[int(grng.integers(len(bucket)))]
+        else:
+            state = initial_state(size, grng)
+        slots.append(_Slot(index=i, size=size, rng=grng, state=state))
     return slots
 
 
@@ -108,11 +135,13 @@ def play_games_parallel(
     temp_moves: int = 20,
     move_cap: int = 4000,
     on_game=None,
+    start_pool=None,
 ) -> list[GameStats]:
     """Self-play de `n_games` partidas em paralelo. Grava posições no buffer e
-    atualiza o normalizador. Retorna GameStats por partida (na ordem dos slots)."""
+    atualiza o normalizador. Retorna GameStats por partida (na ordem dos slots).
+    Com `start_pool`, as partidas começam de posições de meio/fim de jogo."""
     tvf = normalizer.terminal_value_fn()
-    slots = _make_slots(n_games, sizes, rng)
+    slots = _make_slots(n_games, sizes, rng, start_pool)
     stats: list[GameStats | None] = [None] * n_games
 
     def on_finish(slot: _Slot):

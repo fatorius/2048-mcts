@@ -29,7 +29,7 @@ from .evaluators import NetEvaluator, RolloutEvaluator
 from .export_onnx import export_onnx
 from .mcts import MctsConfig
 from .net import Net, param_count
-from .parallel import evaluate_parallel, play_games_parallel
+from .parallel import evaluate_parallel, load_start_pool, play_games_parallel
 from .value_norm import ValueNormalizer
 
 CKPT_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
@@ -42,6 +42,7 @@ class TrainConfig:
     games_per_iter: int = 24
     move_cap: int = 4000
     temp_moves: int = 20
+    start_pool: str | None = None  # JSONL de posições p/ self-play de endgame (None = tabuleiro vazio)
     sims: int = 100
     c_puct: float = 1.5
     mcts_batch: int = 32
@@ -134,6 +135,14 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     buffer = ReplayBuffer(cfg.buffer_per_size)
     normalizer = ValueNormalizer()
+    start_pool = None
+    if cfg.start_pool:
+        start_pool = load_start_pool(cfg.start_pool)
+        print(
+            "start-pool endgame: "
+            + ", ".join(f"{s}×{s}:{len(v)}" for s, v in sorted(start_pool.items())),
+            flush=True,
+        )
     best_score = -1.0
 
     if ckpt is not None:
@@ -142,12 +151,14 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             opt.load_state_dict(ckpt["opt"])
         if "normalizer" in ckpt:
             normalizer.load_state_dict(ckpt["normalizer"])
-        best_score = ckpt.get("eval_mean_score", -1.0)  # não regride o best
+        # best.pt agora é pelo score COMBINADO (multi-tamanho); um ckpt antigo só
+        # tem eval_mean_score (1 tamanho, outra escala) → começa fresco (-1).
+        best_score = ckpt.get("eval_combined", -1.0)
         # Semeia o best.pt do novo run com o modelo carregado, para a pasta ficar
         # autocontida mesmo que nenhuma iteração supere o best histórico.
         torch.save(ckpt, run_dir / "best.pt")
         print(
-            f"resumido de {resumed_from} (iter orig {ckpt.get('iter')}, eval {best_score:.0f}) | "
+            f"resumido de {resumed_from} (iter orig {ckpt.get('iter')}, eval {ckpt.get('eval_mean_score', -1):.0f}) | "
             f"opt={'ok' if 'opt' in ckpt else 'novo'} "
             f"normalizer={'ok' if 'normalizer' in ckpt else 'novo'} buffer=novo (não persistido)",
             flush=True,
@@ -214,6 +225,7 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
         sp_stats = play_games_parallel(
             cfg.games_per_iter, cfg.sizes, evaluator, rng, sp_cfg, buffer, normalizer,
             cfg.temp_moves, cfg.move_cap, on_game=(_sp_prog if using_rollout else None),
+            start_pool=(None if using_rollout else start_pool),
         )
         sp_time = time.time() - t0
 
@@ -241,13 +253,23 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
                 n_steps += 1
         avg = loss_acc / max(1, n_steps)
 
-        # --- 3. EVAL + CHECKPOINT (rede, gulosa, em paralelo) ---
+        # --- 3. EVAL + CHECKPOINT (rede, gulosa, em paralelo) — POR TAMANHO ---
+        # Avalia CADA tamanho treinado (do tabuleiro vazio) — um generalista tem
+        # que ser medido em todas as dimensões, não só 4×4. `best.pt` pelo score
+        # combinado (soma), p/ não ignorar ganhos num tamanho por perdas noutro.
         net.eval()
-        m = evaluate_parallel(
-            NetEvaluator(net, device), rng, cfg.eval_size, cfg.eval_games, cfg.eval_sims,
-            cfg.c_puct, cfg.move_cap, terminal_value_fn=normalizer.terminal_value_fn(),
-            value_transform=normalizer.transform(cfg.eval_size),
-        )
+        evals = {}
+        for esz in cfg.sizes:
+            evals[esz] = evaluate_parallel(
+                NetEvaluator(net, device), rng, esz, cfg.eval_games, cfg.eval_sims,
+                cfg.c_puct, cfg.move_cap, terminal_value_fn=normalizer.terminal_value_fn(),
+                value_transform=normalizer.transform(esz),
+            )
+        m = evals[cfg.sizes[0]]  # primário (gate warm-start + campos legados do report)
+        # best.pt pelo score COMBINADO = soma dos LOGs por tamanho. O log normaliza
+        # a escala (5×5/6×6 têm scores muito maiores que 4×4), então um ganho em
+        # QUALQUER tamanho conta comparável — sem 5×5/6×6 dominar a seleção.
+        combined = float(sum(np.log(e.mean_score + 1.0) for e in evals.values()))
         tag = "rollout" if using_rollout else "net"
         gate = f" [rollout base {rollout_baseline:.0f}]" if using_rollout else ""
         print(
@@ -255,7 +277,12 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             f"score~{_mean(sp_stats, lambda s: s.score):.0f} "
             f"tile~{1 << round(_mean(sp_stats, lambda s: s.max_exponent))} {sp_time:.0f}s | "
             f"buf={buffer.total()} steps={n_steps} loss={avg[0]:.3f}(v{avg[1]:.3f}/p{avg[2]:.3f}) | "
-            f"EVAL score={m.mean_score:.0f} 2048={m.reach_2048_rate:.0%} best={m.best_tile}{gate}",
+            f"EVAL "
+            + " ".join(
+                f"{s}x{s}={e.mean_score:.0f}(2048={e.reach_2048_rate:.0%},t{e.best_tile})"
+                for s, e in evals.items()
+            )
+            + gate,
             flush=True,
         )
 
@@ -291,6 +318,17 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             "eval_reach_2048": m.reach_2048_rate,
             "eval_reach_4096": m.reach_4096_rate,
             "eval_tile_hist": m.tile_hist,
+            "eval_combined": combined,
+            "eval_by_size": {
+                str(s): {
+                    "mean_score": e.mean_score,
+                    "best_tile": e.best_tile,
+                    "reach_2048": e.reach_2048_rate,
+                    "reach_4096": e.reach_4096_rate,
+                    "tile_hist": e.tile_hist,
+                }
+                for s, e in evals.items()
+            },
         }
         with metrics_path.open("a") as fh:
             fh.write(json.dumps(record) + "\n")
@@ -302,10 +340,11 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             "cfg": asdict(cfg),
             "iter": it,
             "eval_mean_score": m.mean_score,
+            "eval_combined": combined,
         }
         torch.save(ckpt, run_dir / "latest.pt")
-        if m.mean_score > best_score:
-            best_score = m.mean_score
+        if combined > best_score:
+            best_score = combined
             torch.save(ckpt, run_dir / "best.pt")
 
     onnx_path = run_dir / "model.onnx"
@@ -339,6 +378,7 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--blocks", type=int, help="blocos conv da rede (treino do zero)")
     p.add_argument("--seed", type=int)
     p.add_argument("--value-weight", type=float, help="peso do loss de valor (padrão 1.0)")
+    p.add_argument("--start-pool", type=str, help="JSONL de posições p/ self-play de endgame")
     args = p.parse_args()
 
     cfg = TrainConfig()
@@ -373,6 +413,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.blocks = args.blocks
     if args.value_weight is not None:
         cfg.value_weight = args.value_weight
+    if args.start_pool is not None:
+        cfg.start_pool = args.start_pool
     return cfg, args.resume
 
 
