@@ -29,7 +29,12 @@ from .evaluators import NetEvaluator, RolloutEvaluator
 from .export_onnx import export_onnx
 from .mcts import MctsConfig
 from .net import Net, param_count
-from .parallel import evaluate_parallel, load_start_pool, play_games_parallel
+from .parallel import (
+    ParallelSelfPlay,
+    evaluate_parallel,
+    load_start_pool,
+    play_games_parallel,
+)
 from .value_norm import ValueNormalizer
 
 CKPT_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
@@ -63,9 +68,15 @@ class TrainConfig:
     buffer_per_size: int = 200_000
     channels: int = 128
     blocks: int = 6
+    # Arquitetura (runs novos usam as melhorias por padrão; Net() mantém defaults
+    # antigos p/ carregar checkpoints legados — ver net.py).
+    coord: bool = True          # canais de coordenada (posição: canto/serpente)
+    pool: str = "avgmax"        # average+max pooling global
+    policy_hidden: bool = True  # camada oculta na cabeça de política
     eval_size: int = 4
     eval_games: int = 12
     eval_sims: int = 100
+    sp_workers: int = 1  # workers de self-play (>1 = multiprocesso, lever #2)
     seed: int = 0
 
 
@@ -125,13 +136,21 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
         saved = ckpt.get("cfg", {})
         cfg.channels = saved.get("channels", cfg.channels)
         cfg.blocks = saved.get("blocks", cfg.blocks)
+        # Arquitetura DO CHECKPOINT (defaults = arq. antiga p/ checkpoints legados
+        # sem essas chaves — precisam casar com os pesos salvos).
+        cfg.coord = saved.get("coord", False)
+        cfg.pool = saved.get("pool", "avg")
+        cfg.policy_hidden = saved.get("policy_hidden", False)
         # NÃO desligamos o warm-start no resume: o gate se auto-corrige. Se a rede
         # já bater o rollout, ele abre na it0; se estiver travada abaixo (o caso de
         # querer destilar o rollout numa rede parada), ele distila até alcançar.
         # Use --no-warm-start para resumir direto em self-play da rede.
         resumed_from = str(ckpt_path)
 
-    net = Net(cfg.channels, cfg.blocks).to(device)
+    net = Net(
+        cfg.channels, cfg.blocks,
+        coord=cfg.coord, pool=cfg.pool, policy_hidden=cfg.policy_hidden,
+    ).to(device)
     opt = torch.optim.Adam(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     buffer = ReplayBuffer(cfg.buffer_per_size)
     normalizer = ValueNormalizer()
@@ -204,6 +223,16 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             flush=True,
         )
 
+    # Pool de self-play multiprocesso (lever #2): sobrepõe CPU(árvore)/GPU(forward)
+    # entre workers. Só p/ self-play da REDE em CUDA (o rollout do warm-start não usa
+    # rede). Persistente entre iterações (CUDA inicializado 1× por worker).
+    sp_pool = None
+    if cfg.sp_workers > 1 and device == "cuda":
+        arch = dict(channels=cfg.channels, blocks=cfg.blocks, coord=cfg.coord,
+                    pool=cfg.pool, policy_hidden=cfg.policy_hidden)
+        sp_pool = ParallelSelfPlay(arch, device, cfg.sp_workers)
+        print(f"self-play multiprocesso: {cfg.sp_workers} workers", flush=True)
+
     for it in range(cfg.iterations):
         # --- 1. SELF-PLAY (rollout enquanto o gate não abrir; senão, rede) ---
         # Partidas em PARALELO com busca sequencial por partida (qualidade = TS),
@@ -222,11 +251,19 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
                 flush=True,
             )
 
-        sp_stats = play_games_parallel(
-            cfg.games_per_iter, cfg.sizes, evaluator, rng, sp_cfg, buffer, normalizer,
-            cfg.temp_moves, cfg.move_cap, on_game=(_sp_prog if using_rollout else None),
-            start_pool=(None if using_rollout else start_pool),
-        )
+        if sp_pool is not None and not using_rollout:
+            # Multiprocesso: workers coletam registros e o principal agrega no
+            # buffer/normalizador (sem on_game ao vivo — só self-play da rede).
+            sp_stats = sp_pool.play(
+                cfg.games_per_iter, cfg.sizes, net, normalizer, sp_cfg, buffer,
+                cfg.temp_moves, cfg.move_cap, start_pool, base_seed=cfg.seed + it * 1000,
+            )
+        else:
+            sp_stats = play_games_parallel(
+                cfg.games_per_iter, cfg.sizes, evaluator, rng, sp_cfg, buffer, normalizer,
+                cfg.temp_moves, cfg.move_cap, on_game=(_sp_prog if using_rollout else None),
+                start_pool=(None if using_rollout else start_pool),
+            )
         sp_time = time.time() - t0
 
         # --- 2. TRAIN ---
@@ -347,6 +384,9 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             best_score = combined
             torch.save(ckpt, run_dir / "best.pt")
 
+    if sp_pool is not None:
+        sp_pool.close()
+
     onnx_path = run_dir / "model.onnx"
     export_onnx(net, str(onnx_path), example_size=cfg.sizes[0])
     print(f"exported ONNX -> {onnx_path}", flush=True)
@@ -376,9 +416,16 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--no-warm-start", action="store_true", help="começa direto no self-play da rede")
     p.add_argument("--channels", type=int, help="canais da rede (treino do zero)")
     p.add_argument("--blocks", type=int, help="blocos conv da rede (treino do zero)")
+    p.add_argument("--coord", action=argparse.BooleanOptionalAction, default=None,
+                   help="canais de coordenada / CoordConv (treino do zero)")
+    p.add_argument("--pool", choices=("avg", "avgmax"), help="pooling global (treino do zero)")
+    p.add_argument("--policy-hidden", action=argparse.BooleanOptionalAction, default=None,
+                   help="camada oculta na cabeça de política (treino do zero)")
     p.add_argument("--seed", type=int)
     p.add_argument("--value-weight", type=float, help="peso do loss de valor (padrão 1.0)")
     p.add_argument("--start-pool", type=str, help="JSONL de posições p/ self-play de endgame")
+    p.add_argument("--sp-workers", type=int,
+                   help="workers de self-play (>1 = multiprocesso; sobrepõe CPU/GPU)")
     args = p.parse_args()
 
     cfg = TrainConfig()
@@ -411,10 +458,18 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.channels = args.channels
     if args.blocks is not None:
         cfg.blocks = args.blocks
+    if args.coord is not None:
+        cfg.coord = args.coord
+    if args.pool is not None:
+        cfg.pool = args.pool
+    if args.policy_hidden is not None:
+        cfg.policy_hidden = args.policy_hidden
     if args.value_weight is not None:
         cfg.value_weight = args.value_weight
     if args.start_pool is not None:
         cfg.start_pool = args.start_pool
+    if args.sp_workers is not None:
+        cfg.sp_workers = args.sp_workers
     return cfg, args.resume
 
 

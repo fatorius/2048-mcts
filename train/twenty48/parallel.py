@@ -165,6 +165,119 @@ def play_games_parallel(
     return [s for s in stats if s is not None]
 
 
+# ---------------------------------------------------------------------------
+# Self-play MULTIPROCESSO (lever #2): N workers (1 core cada) rodam o driver
+# sequencial acima em fatias das partidas. Enquanto um worker faz CPU (árvore
+# MCTS + board.step), o forward de outro roda na GPU — sobrepondo CPU/GPU e
+# enchendo a GPU que ficava ~50% ociosa no driver de 1 processo. Cada worker tem
+# seu próprio contexto CUDA (~120 MB aqui) e cópia da rede; o normalizador fica
+# CONGELADO durante o self-play da iteração (snapshot do início) e é atualizado
+# no processo principal com os reward-to-go coletados.
+# ---------------------------------------------------------------------------
+
+_WORKER: dict = {}
+
+
+def _mp_init(arch: dict, device: str):
+    import torch
+
+    from .net import Net
+
+    # Morrer junto com o processo pai: se o treino for morto (kill), o kernel envia
+    # SIGKILL ao worker. Sem isto, workers viram órfãos (reparented p/ init) e
+    # continuam consumindo CPU/GPU — 6 workers em 4 cores etc. (Linux-only.)
+    try:
+        import ctypes
+        import signal
+
+        ctypes.CDLL("libc.so.6").prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+    torch.set_num_threads(1)  # 1 core por worker (não oversubscrever os 4 vCPUs)
+    _WORKER["net"] = Net(**arch).to(device).eval()
+    _WORKER["device"] = device
+
+
+def _selfplay_collect(n_games, sizes, evaluator, rng, cfg, norm, temp_moves, move_cap, start_pool):
+    """Igual ao play_games_parallel, mas RETORNA os registros em vez de mutar um
+    buffer/normalizador compartilhado (normalizador congelado; ver acima)."""
+    tvf = norm.terminal_value_fn()
+    slots = _make_slots(n_games, sizes, rng, start_pool)
+    records = []  # (size, state, policy, rtg)
+    stats = []
+
+    def on_finish(slot: _Slot):
+        final = float(slot.state.score)
+        for st, pol in slot.records:
+            records.append((slot.size, st, pol, final - float(st.score)))
+        stats.append(GameStats(slot.size, slot.state.score, max_exponent(slot.state), slot.moves))
+
+    _run_parallel(
+        slots, evaluator, cfg, tvf, True, temp_moves, move_cap,
+        record=True, on_finish=on_finish, transform_fn=norm.transform,
+    )
+    return records, stats
+
+
+def _mp_run(payload: dict):
+    import torch
+
+    from .evaluators import NetEvaluator
+
+    net = _WORKER["net"]
+    net.load_state_dict(payload["net_state"])  # pesos da iteração (tensores CPU)
+    net.eval()
+    norm = ValueNormalizer()
+    norm.load_state_dict(payload["norm_state"])
+    ev = NetEvaluator(net, _WORKER["device"])
+    rng = np.random.default_rng(payload["seed"])
+    with torch.no_grad():
+        return _selfplay_collect(
+            payload["n_games"], payload["sizes"], ev, rng, payload["cfg"], norm,
+            payload["temp_moves"], payload["move_cap"], payload["start_pool"],
+        )
+
+
+class ParallelSelfPlay:
+    """Pool persistente de workers de self-play (CUDA inicializado 1× por worker;
+    reusado entre iterações). Cada iteração envia os pesos atuais e agrega os
+    registros no buffer/normalizador do processo principal."""
+
+    def __init__(self, arch: dict, device: str, n_workers: int):
+        import torch.multiprocessing as mp
+
+        self.n_workers = n_workers
+        ctx = mp.get_context("spawn")  # CUDA exige spawn (não fork)
+        self.pool = ctx.Pool(n_workers, initializer=_mp_init, initargs=(arch, device))
+
+    def play(self, n_games, sizes, net, normalizer, cfg, buffer, temp_moves, move_cap,
+             start_pool, base_seed) -> list[GameStats]:
+        net_state = {k: v.detach().cpu() for k, v in net.state_dict().items()}
+        norm_state = normalizer.state_dict()
+        per = [
+            n_games // self.n_workers + (1 if i < n_games % self.n_workers else 0)
+            for i in range(self.n_workers)
+        ]
+        payloads = [
+            dict(net_state=net_state, norm_state=norm_state, cfg=cfg, n_games=g,
+                 sizes=tuple(sizes), temp_moves=temp_moves, move_cap=move_cap,
+                 start_pool=start_pool, seed=base_seed + 1 + i)
+            for i, g in enumerate(per) if g > 0
+        ]
+        results = self.pool.map(_mp_run, payloads)
+        stats: list[GameStats] = []
+        for records, st in results:
+            for size, state, pol, rtg in records:
+                buffer.add(size, state, pol, rtg)
+                normalizer.update(size, rtg)
+            stats.extend(st)
+        return stats
+
+    def close(self):
+        self.pool.close()
+        self.pool.join()
+
+
 def evaluate_parallel(
     evaluator,
     rng: np.random.Generator,

@@ -71,7 +71,12 @@ def export_checkpoint(ckpt: str, out: str) -> None:
         p = p / "best.pt"
     data = torch.load(p, map_location="cpu", weights_only=False)
     cfg = data.get("cfg", {})
-    net = Net(cfg.get("channels", 64), cfg.get("blocks", 4))
+    net = Net(
+        cfg.get("channels", 64), cfg.get("blocks", 4),
+        coord=cfg.get("coord", False),
+        pool=cfg.get("pool", "avg"),
+        policy_hidden=cfg.get("policy_hidden", False),
+    )
     net.load_state_dict(data["net"])
     export_onnx(net, out)
     _verify(net, out)

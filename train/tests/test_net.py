@@ -49,6 +49,44 @@ def test_net_forward_size_agnostic():
         assert torch.all(value >= 0) and torch.all(value <= 1)
 
 
+def test_net_new_arch_size_agnostic():
+    # Arquitetura nova (coord + avgmax pool + policy hidden): mesma interface,
+    # continua agnóstica ao tamanho e valor em [0,1].
+    net = Net(channels=32, blocks=3, coord=True, pool="avgmax", policy_hidden=True).eval()
+    for n in (3, 4, 5, 6):
+        states = [_state(n, seed=i) for i in range(4)]
+        x = torch.from_numpy(encode_batch(states))
+        with torch.no_grad():
+            logits, value = net(x)
+        assert logits.shape == (4, NUM_ACTIONS)
+        assert value.shape == (4,)
+        assert torch.all(value >= 0) and torch.all(value <= 1)
+
+
+def test_net_coord_breaks_translation_invariance():
+    # CoordConv deve tornar a rede sensível à POSIÇÃO: o mesmo tile em cantos
+    # diferentes produz saídas diferentes (o GAP puro daria idêntico).
+    torch.manual_seed(0)
+    net = Net(channels=16, blocks=2, coord=True, pool="avgmax", policy_hidden=True).eval()
+    a = GameState(4, (1,) + (0,) * 15, 0)               # tile no canto sup-esq
+    b = GameState(4, (0,) * 15 + (1,), 0)               # tile no canto inf-dir
+    xa = torch.from_numpy(encode_batch([a]))
+    xb = torch.from_numpy(encode_batch([b]))
+    with torch.no_grad():
+        la, _ = net(xa)
+        lb, _ = net(xb)
+    assert not torch.allclose(la, lb, atol=1e-5)
+
+
+def test_net_default_is_legacy_arch():
+    # Default = arquitetura antiga (p/ carregar checkpoints legados): input 20 canais
+    # (sem coord), pool avg (feat = channels), política Linear cru.
+    net = Net(channels=32, blocks=2)
+    assert net.trunk[0].in_channels == NUM_CHANNELS
+    assert isinstance(net.policy_head, torch.nn.Linear)
+    assert net.value_head[0].in_features == 32  # avg pool → feat = channels
+
+
 def test_net_same_weights_all_sizes():
     # A MESMA instância (mesmos pesos) processa qualquer n — nenhum parâmetro
     # depende da posição/tamanho.

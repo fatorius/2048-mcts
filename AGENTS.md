@@ -47,6 +47,15 @@ forward`. Util even *fell* 51 %→39 % at batch 64 because CPU work per round gr
 
 Expected after both: self-play ~5–6k → **~17k states/s (GPU-bound)**.
 
+**Status (2026-09-22): both done.** #1 = `--games-per-iter 64`. #2 implemented as
+`ParallelSelfPlay` in `twenty48/parallel.py` (persistent spawn pool, N workers × 1 core,
+own CUDA context each; workers return records, main aggregates into buffer/normalizer;
+normalizer frozen during the iteration's self-play). Enable with `--sp-workers N`
+(default 1). **Measured: GPU util ~50% → ~94%, power ~13 W → ~30 W with 3 workers**
+(≈2× throughput). 3 workers is the sweet spot here (2 already saturate the ~17k ceiling;
+more just wastes VRAM/CPU since we're then GPU-bound). #3 (native port) remains not worth
+it on this card — see below.
+
 ### Capacity math → why a C++/Rust engine port is NOT worth it *on this hardware*
 
 4-core Python CPU ≈ 99 µs ÷ 4 ≈ **~40k states/s** capacity. GPU ceiling ≈ **~17k
