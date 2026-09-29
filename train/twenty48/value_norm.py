@@ -66,6 +66,18 @@ class ValueNormalizer:
             self._sq[size] = (1 - a) * self._sq[size] + a * x * x
             self._count[size] += 1
 
+    def recalibrate(self, size: int, values) -> None:
+        """Define μ,σ a partir da distribuição REAL de reward-to-go (média/var da
+        amostra), SEM viés de ordem. Corrige o EMA por-posição (janela ~50 << jogo
+        ~1000), que seguia a trajetória decrescente do rtg dentro do jogo e saturava
+        o valor (μ,σ ~10× pequenos demais). Ver histórico."""
+        v = np.asarray(values, dtype=np.float64)
+        if v.size == 0:
+            return
+        self._mean[size] = float(v.mean())
+        self._sq[size] = float((v * v).mean())
+        self._count[size] = int(v.size)
+
     def _mu_sigma(self, size: int) -> tuple[float, float]:
         if size not in self._mean:
             return 0.0, 0.0

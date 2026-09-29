@@ -45,6 +45,14 @@ class ReplayBuffer:
     def total(self) -> int:
         return sum(len(r) for r in self.by_size.values())
 
+    def values(self, size: int) -> np.ndarray:
+        """Todos os alvos de valor (reward-to-go bruto) de um tamanho, SEM ordem —
+        para recalibrar o normalizador sem viés de ordem."""
+        ring = self.by_size.get(size)
+        if ring is None or not ring.data:
+            return np.empty(0, dtype=np.float32)
+        return np.array([it[2] for it in ring.data], dtype=np.float32)
+
     def sizes_ready(self, min_count: int) -> list[int]:
         return [s for s, r in self.by_size.items() if len(r) >= min_count]
 

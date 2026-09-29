@@ -60,3 +60,34 @@ def test_per_size_independent():
     # Um score de 3000 é ótimo para 4×4, mas baixíssimo relativo a 6×6.
     assert vn.normalize(3000, 4) > 0.9
     assert vn.normalize(3000, 6) < 0.1
+
+
+def test_recalibrate_order_independent():
+    import numpy as np
+    from twenty48.value_norm import ValueNormalizer
+    vals = np.arange(0, 20000, 7, dtype=np.float64)  # rtg realista, espalhado
+    # ordem crescente vs decrescente vs embaralhada -> mesmo μ,σ (sem viés)
+    mus, sigs = [], []
+    for order in (vals, vals[::-1], np.random.default_rng(0).permutation(vals)):
+        nz = ValueNormalizer()
+        nz.recalibrate(4, order)
+        mu, sig = nz._mu_sigma(4)
+        mus.append(mu); sigs.append(sig)
+    assert max(mus) - min(mus) < 1e-6
+    assert max(sigs) - min(sigs) < 1e-6
+    # μ ≈ média real (ao contrário do EMA por-posição enviesado)
+    assert abs(mus[0] - vals.mean()) < 1.0
+    # e o valor NÃO satura: rtg alto e baixo mapeiam para valores distintos
+    nz = ValueNormalizer(); nz.recalibrate(4, vals)
+    assert nz.normalize(2000, 4) < nz.normalize(18000, 4) - 0.1
+
+
+def test_buffer_values_roundtrip():
+    import numpy as np
+    from twenty48.buffer import ReplayBuffer
+    from twenty48.board import GameState
+    buf = ReplayBuffer(1000)
+    for r in (100.0, 5000.0, 20000.0):
+        buf.add(4, GameState(4, tuple([0]*16), 0), np.full(4, 0.25, np.float32), r)
+    v = buf.values(4)
+    assert sorted(v.tolist()) == [100.0, 5000.0, 20000.0]

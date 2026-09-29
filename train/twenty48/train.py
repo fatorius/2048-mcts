@@ -29,6 +29,7 @@ from .evaluators import NetEvaluator, RolloutEvaluator
 from .export_onnx import export_onnx
 from .mcts import MctsConfig
 from .net import Net, param_count
+from .shaping import cell_weights, positional_bonus
 from .parallel import (
     ParallelSelfPlay,
     evaluate_parallel,
@@ -65,6 +66,15 @@ class TrainConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     value_weight: float = 1.0  # peso do loss de valor: loss = loss_p + value_weight*loss_v
+    # Recalibra μ,σ do valor pela distribuição real de rtg no buffer (sem viés de
+    # ordem). Corrige o bug do EMA por-posição que saturava o valor. Ver value_norm.py.
+    value_recalib: bool = True
+    # Shaping posicional do alvo de valor (recompensa cantos, pune centro). Ver shaping.py.
+    pos_shaping: bool = False
+    pos_lambda: float = 0.3
+    pos_w_corner: float = 1.0
+    pos_w_edge: float = 0.25
+    pos_w_center: float = -1.0
     buffer_per_size: int = 200_000
     channels: int = 128
     blocks: int = 6
@@ -76,6 +86,8 @@ class TrainConfig:
     eval_size: int = 4
     eval_games: int = 12
     eval_sims: int = 100
+    eval_sizes: tuple | None = None  # tamanhos a avaliar; None = usa `sizes`. Permite
+    #                                  treinar num tamanho e medir a TRANSFERÊNCIA p/ outros.
     sp_workers: int = 1  # workers de self-play (>1 = multiprocesso, lever #2)
     seed: int = 0
 
@@ -266,6 +278,15 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             )
         sp_time = time.time() - t0
 
+        # --- 1b. RECALIBRA O NORMALIZADOR (sem viés de ordem) ---
+        # μ,σ da distribuição real de rtg no buffer, corrigindo o EMA por-posição
+        # que saturava o valor (μ,σ pequenos demais → value≈1.0 p/ rtg>~5k).
+        if cfg.value_recalib:
+            for s in list(buffer.by_size):
+                vals = buffer.values(s)
+                if vals.size >= cfg.train_batch:
+                    normalizer.recalibrate(s, vals)
+
         # --- 2. TRAIN ---
         net.train()
         ready = buffer.sizes_ready(cfg.train_batch)
@@ -278,7 +299,13 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
                 x = torch.from_numpy(encode_batch(states)).to(device)
                 target_p = torch.from_numpy(pol).to(device)
                 # Alvo de valor padronizado com os μ,σ correntes (bem espalhado em [0,1]).
-                target_v = torch.from_numpy(normalizer.normalize_array(raw_scores, size)).to(device)
+                tv = normalizer.normalize_array(raw_scores, size)
+                if cfg.pos_shaping:
+                    # + shaping posicional (recompensa cantos, pune centro). Clip em
+                    # [0.01,0.99] p/ manter o denorm/renorm do backup reward-to-go são.
+                    w = cell_weights(size, cfg.pos_w_corner, cfg.pos_w_edge, cfg.pos_w_center)
+                    tv = np.clip(tv + cfg.pos_lambda * positional_bonus(states, w), 0.01, 0.99)
+                target_v = torch.from_numpy(tv.astype(np.float32)).to(device)
                 logits, value = net(x)
                 loss_v = F.mse_loss(value, target_v)
                 loss_p = -(target_p * F.log_softmax(logits, dim=1)).sum(1).mean()
@@ -295,14 +322,18 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
         # que ser medido em todas as dimensões, não só 4×4. `best.pt` pelo score
         # combinado (soma), p/ não ignorar ganhos num tamanho por perdas noutro.
         net.eval()
+        eval_sizes = cfg.eval_sizes if cfg.eval_sizes else cfg.sizes
         evals = {}
-        for esz in cfg.sizes:
+        for esz in eval_sizes:
             evals[esz] = evaluate_parallel(
                 NetEvaluator(net, device), rng, esz, cfg.eval_games, cfg.eval_sims,
                 cfg.c_puct, cfg.move_cap, terminal_value_fn=normalizer.terminal_value_fn(),
                 value_transform=normalizer.transform(esz),
             )
-        m = evals[cfg.sizes[0]]  # primário (gate warm-start + campos legados do report)
+        # primário (gate warm-start + campos legados do report): o tamanho treinado,
+        # se avaliado; senão o primeiro avaliado.
+        primary = cfg.sizes[0] if cfg.sizes[0] in evals else next(iter(evals))
+        m = evals[primary]
         # best.pt pelo score COMBINADO = soma dos LOGs por tamanho. O log normaliza
         # a escala (5×5/6×6 têm scores muito maiores que 4×4), então um ganho em
         # QUALQUER tamanho conta comparável — sem 5×5/6×6 dominar a seleção.
@@ -313,7 +344,8 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
             f"[it {it:02d}] self-play({tag}) {cfg.games_per_iter}g "
             f"score~{_mean(sp_stats, lambda s: s.score):.0f} "
             f"tile~{1 << round(_mean(sp_stats, lambda s: s.max_exponent))} {sp_time:.0f}s | "
-            f"buf={buffer.total()} steps={n_steps} loss={avg[0]:.3f}(v{avg[1]:.3f}/p{avg[2]:.3f}) | "
+            f"buf={buffer.total()} steps={n_steps} loss={avg[0]:.3f}(v{avg[1]:.3f}/p{avg[2]:.3f}) "
+            f"vnorm(μ{normalizer._mu_sigma(cfg.sizes[0])[0]:.0f}/σ{normalizer._mu_sigma(cfg.sizes[0])[1]:.0f}) | "
             f"EVAL "
             + " ".join(
                 f"{s}x{s}={e.mean_score:.0f}(2048={e.reach_2048_rate:.0%},t{e.best_tile})"
@@ -408,6 +440,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--sims", type=int)
     p.add_argument("--train-steps", type=int)
     p.add_argument("--sizes", type=int, nargs="+")
+    p.add_argument("--eval-sizes", type=int, nargs="+",
+                   help="tamanhos a avaliar (default = --sizes); mede transferência")
     p.add_argument("--eval-games", type=int)
     p.add_argument("--eval-sims", type=int)
     p.add_argument("--warm-sims", type=int, help="sims do rollout no warm-start (0 = usa --sims)")
@@ -426,6 +460,14 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--start-pool", type=str, help="JSONL de posições p/ self-play de endgame")
     p.add_argument("--sp-workers", type=int,
                    help="workers de self-play (>1 = multiprocesso; sobrepõe CPU/GPU)")
+    p.add_argument("--pos-shaping", action=argparse.BooleanOptionalAction, default=None,
+                   help="shaping posicional do alvo de valor (recompensa cantos)")
+    p.add_argument("--pos-lambda", type=float, help="força do shaping posicional (padrão 0.3)")
+    p.add_argument("--pos-w-corner", type=float)
+    p.add_argument("--pos-w-edge", type=float)
+    p.add_argument("--pos-w-center", type=float)
+    p.add_argument("--value-recalib", action=argparse.BooleanOptionalAction, default=None,
+                   help="recalibra μ,σ do valor pela distribuição real de rtg (padrão ON)")
     args = p.parse_args()
 
     cfg = TrainConfig()
@@ -442,6 +484,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.games_per_iter = args.games_per_iter
     if args.sizes is not None:
         cfg.sizes = tuple(args.sizes)
+    if args.eval_sizes is not None:
+        cfg.eval_sizes = tuple(args.eval_sizes)
     if args.eval_games is not None:
         cfg.eval_games = args.eval_games
     if args.eval_sims is not None:
@@ -470,6 +514,18 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.start_pool = args.start_pool
     if args.sp_workers is not None:
         cfg.sp_workers = args.sp_workers
+    if args.pos_shaping is not None:
+        cfg.pos_shaping = args.pos_shaping
+    if args.pos_lambda is not None:
+        cfg.pos_lambda = args.pos_lambda
+    if args.pos_w_corner is not None:
+        cfg.pos_w_corner = args.pos_w_corner
+    if args.pos_w_edge is not None:
+        cfg.pos_w_edge = args.pos_w_edge
+    if args.pos_w_center is not None:
+        cfg.pos_w_center = args.pos_w_center
+    if args.value_recalib is not None:
+        cfg.value_recalib = args.value_recalib
     return cfg, args.resume
 
 
