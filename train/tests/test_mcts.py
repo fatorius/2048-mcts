@@ -53,3 +53,22 @@ def test_select_move_temperature():
     assert select_move([0, 0, 0, 0], 1.0, rng) == -1  # sem visitas
     # τ=1 amostra proporcional: com massa só em índice 2, sempre retorna 2
     assert select_move([0, 0, 7, 0], 1.0, rng) == 2
+
+
+def test_move_temperature_decays_to_floor_and_holds():
+    from twenty48.mcts import move_temperature
+    # começa em hi, decai linear até lo em decay_moves, depois mantém lo.
+    assert move_temperature(0, 1.0, 0.3, 400) == 1.0
+    assert abs(move_temperature(200, 1.0, 0.3, 400) - 0.65) < 1e-9  # meio do caminho
+    assert abs(move_temperature(400, 1.0, 0.3, 400) - 0.3) < 1e-9   # piso
+    assert abs(move_temperature(5000, 1.0, 0.3, 400) - 0.3) < 1e-9  # mantém o piso
+    # decay_moves<=0 => direto no piso.
+    assert move_temperature(0, 1.0, 0.3, 0) == 0.3
+
+
+def test_move_temperature_legacy_ramp_to_zero():
+    from twenty48.mcts import move_temperature
+    # defaults antigos (hi=1, lo=0): rampa de 1->0, depois argmax (temp 0).
+    assert move_temperature(0, 1.0, 0.0, 20) == 1.0
+    assert move_temperature(20, 1.0, 0.0, 20) == 0.0
+    assert move_temperature(999, 1.0, 0.0, 20) == 0.0

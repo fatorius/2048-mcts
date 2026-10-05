@@ -84,6 +84,21 @@ class MctsConfig:
     batch_size: int = 32
     dirichlet_alpha: float = 0.5
     dirichlet_eps: float = 0.25
+    # Schedule de temperatura da seleção de lance no self-play (ver move_temperature).
+    temp_hi: float = 1.0  # temperatura de abertura (amostragem ∝ visitas)
+    temp_lo: float = 0.0  # piso (0 = argmax no fim; >0 mantém exploração o jogo todo)
+
+
+def move_temperature(moves: int, hi: float, lo: float, decay_moves: int) -> float:
+    """Temperatura de seleção que decai LINEARMENTE de `hi` (abertura) até `lo`
+    (piso) ao longo de `decay_moves` lances e então se mantém em `lo`. Com lo>0,
+    mantém exploração no meio/fim de jogo — ao contrário do corte duro antigo
+    (1.0 nos primeiros N lances, 0.0 depois), que deixava ~98% de um jogo de 4×4
+    determinístico e colapsava a diversidade dos alvos de self-play."""
+    if decay_moves <= 0:
+        return lo
+    frac = min(1.0, moves / decay_moves)
+    return hi + (lo - hi) * frac
 
 
 @dataclass

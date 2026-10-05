@@ -47,7 +47,9 @@ class TrainConfig:
     iterations: int = 40
     games_per_iter: int = 24
     move_cap: int = 4000
-    temp_moves: int = 20
+    temp_moves: int = 20  # horizonte de decaimento da temperatura (lances até o piso)
+    temp_hi: float = 1.0  # temperatura de abertura do self-play
+    temp_lo: float = 0.0  # piso de temperatura (>0 mantém exploração no meio/fim de jogo)
     start_pool: str | None = None  # JSONL de posições p/ self-play de endgame (None = tabuleiro vazio)
     sims: int = 100
     c_puct: float = 1.5
@@ -198,9 +200,11 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
     (run_dir / "config.json").write_text(
         json.dumps({**asdict(cfg), "device": device, "resumed_from": resumed_from}, indent=2)
     )
-    mcts_cfg = MctsConfig(simulations=cfg.sims, c_puct=cfg.c_puct, batch_size=cfg.mcts_batch)
+    mcts_cfg = MctsConfig(simulations=cfg.sims, c_puct=cfg.c_puct, batch_size=cfg.mcts_batch,
+                          temp_hi=cfg.temp_hi, temp_lo=cfg.temp_lo)
     warm_sims = cfg.warm_sims or cfg.sims
-    warm_mcts_cfg = MctsConfig(simulations=warm_sims, c_puct=cfg.c_puct, batch_size=cfg.mcts_batch)
+    warm_mcts_cfg = MctsConfig(simulations=warm_sims, c_puct=cfg.c_puct, batch_size=cfg.mcts_batch,
+                               temp_hi=cfg.temp_hi, temp_lo=cfg.temp_lo)
 
     print(f"device={device}  params={param_count(net)}  sizes={cfg.sizes}", flush=True)
     print(f"run dir: {run_dir}", flush=True)
@@ -468,6 +472,11 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--pos-w-center", type=float)
     p.add_argument("--value-recalib", action=argparse.BooleanOptionalAction, default=None,
                    help="recalibra μ,σ do valor pela distribuição real de rtg (padrão ON)")
+    p.add_argument("--temp-moves", type=int,
+                   help="horizonte de decaimento da temperatura: lances até atingir o piso")
+    p.add_argument("--temp-hi", type=float, help="temperatura de abertura do self-play (padrão 1.0)")
+    p.add_argument("--temp-lo", type=float,
+                   help="piso de temperatura (0=argmax no fim; >0 mantém exploração o jogo todo)")
     args = p.parse_args()
 
     cfg = TrainConfig()
@@ -512,6 +521,12 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.value_weight = args.value_weight
     if args.start_pool is not None:
         cfg.start_pool = args.start_pool
+    if args.temp_moves is not None:
+        cfg.temp_moves = args.temp_moves
+    if args.temp_hi is not None:
+        cfg.temp_hi = args.temp_hi
+    if args.temp_lo is not None:
+        cfg.temp_lo = args.temp_lo
     if args.sp_workers is not None:
         cfg.sp_workers = args.sp_workers
     if args.pos_shaping is not None:

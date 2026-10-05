@@ -16,7 +16,7 @@ import numpy as np
 from .board import GameState, initial_state, is_terminal, max_exponent, step
 from .buffer import ReplayBuffer
 from .evaluate import EvalMetrics
-from .mcts import MctsConfig, mcts_search_gen, select_move
+from .mcts import MctsConfig, mcts_search_gen, move_temperature, select_move
 from .self_play import GameStats
 from .value_norm import ValueNormalizer
 
@@ -52,7 +52,7 @@ def _run_parallel(slots, evaluator, cfg, tvf, add_noise, temp_moves, move_cap, r
                 (visits / total).astype(np.float32) if total > 0 else np.full(4, 0.25, np.float32)
             )
             slot.records.append((slot.state, policy))
-        temperature = 1.0 if slot.moves < temp_moves else 0.0
+        temperature = move_temperature(slot.moves, cfg.temp_hi, cfg.temp_lo, temp_moves)
         action = select_move(result.visits, temperature, slot.rng)
         if action == -1:
             _finish(slot)
