@@ -71,6 +71,7 @@ class TrainConfig:
     # Recalibra μ,σ do valor pela distribuição real de rtg no buffer (sem viés de
     # ordem). Corrige o bug do EMA por-posição que saturava o valor. Ver value_norm.py.
     value_recalib: bool = True
+    value_advantage: bool = False  # alvo = advantage rtg−b(score) (isola qualidade-de-tabuleiro)
     # Shaping posicional do alvo de valor (recompensa cantos, pune centro). Ver shaping.py.
     pos_shaping: bool = False
     pos_lambda: float = 0.3
@@ -291,6 +292,15 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
                 if vals.size >= cfg.train_batch:
                     normalizer.recalibrate(s, vals)
 
+        # --- 1c. AJUSTA A BASELINE b(score)=E[rtg|score] (modo advantage) ---
+        # Alvo = sigmoide do advantage a=rtg−b(score): remove o componente de
+        # PROGRESSO (que dominava o rtg) e deixa a QUALIDADE-DE-TABULEIRO como sinal.
+        if cfg.value_advantage:
+            for s in list(buffer.by_size):
+                vals = buffer.values(s)
+                if vals.size >= cfg.train_batch:
+                    normalizer.fit_baseline(s, buffer.scores(s), vals)
+
         # --- 2. TRAIN ---
         net.train()
         ready = buffer.sizes_ready(cfg.train_batch)
@@ -303,7 +313,13 @@ def train(cfg: TrainConfig, resume: str | None = None) -> None:
                 x = torch.from_numpy(encode_batch(states)).to(device)
                 target_p = torch.from_numpy(pol).to(device)
                 # Alvo de valor padronizado com os μ,σ correntes (bem espalhado em [0,1]).
-                tv = normalizer.normalize_array(raw_scores, size)
+                if cfg.value_advantage:
+                    # Advantage: sigmoide de (rtg − b(score)) padronizado — isola
+                    # qualidade-de-tabuleiro do progresso do jogo (ver value_norm).
+                    cur_scores = np.array([st.score for st in states], dtype=np.float64)
+                    tv = normalizer.advantage_array(raw_scores, cur_scores, size)
+                else:
+                    tv = normalizer.normalize_array(raw_scores, size)
                 if cfg.pos_shaping:
                     # + shaping posicional (recompensa cantos, pune centro). Clip em
                     # [0.01,0.99] p/ manter o denorm/renorm do backup reward-to-go são.
@@ -472,6 +488,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
     p.add_argument("--pos-w-center", type=float)
     p.add_argument("--value-recalib", action=argparse.BooleanOptionalAction, default=None,
                    help="recalibra μ,σ do valor pela distribuição real de rtg (padrão ON)")
+    p.add_argument("--value-advantage", action=argparse.BooleanOptionalAction, default=None,
+                   help="alvo de valor = advantage rtg−b(score) (isola qualidade-de-tabuleiro)")
     p.add_argument("--temp-moves", type=int,
                    help="horizonte de decaimento da temperatura: lances até atingir o piso")
     p.add_argument("--temp-hi", type=float, help="temperatura de abertura do self-play (padrão 1.0)")
@@ -541,6 +559,8 @@ def _parse() -> tuple[TrainConfig, str | None]:
         cfg.pos_w_center = args.pos_w_center
     if args.value_recalib is not None:
         cfg.value_recalib = args.value_recalib
+    if args.value_advantage is not None:
+        cfg.value_advantage = args.value_advantage
     return cfg, args.resume
 
 

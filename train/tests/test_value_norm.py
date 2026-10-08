@@ -91,3 +91,60 @@ def test_buffer_values_roundtrip():
         buf.add(4, GameState(4, tuple([0]*16), 0), np.full(4, 0.25, np.float32), r)
     v = buf.values(4)
     assert sorted(v.tolist()) == [100.0, 5000.0, 20000.0]
+
+
+def _advantage_dataset(seed=0, n=8000):
+    """rtg = remaining(score) + quality, com quality INDEPENDENTE do score.
+    A baseline deve capturar remaining(score) e o advantage deve isolar quality."""
+    rng = np.random.default_rng(seed)
+    score = rng.uniform(200, 18000, size=n)
+    remaining = 22000.0 - score  # "progresso": quanto rtg típico resta nesse estágio
+    quality = rng.normal(0, 2500, size=n)  # qualidade-de-tabuleiro (sinal útil)
+    rtg = np.clip(remaining + quality, 0, None)
+    return score, rtg, quality
+
+
+def test_advantage_isolates_board_quality():
+    score, rtg, quality = _advantage_dataset()
+    vn = ValueNormalizer()
+    vn.fit_baseline(4, score, rtg)
+    v = vn.advantage_array(rtg, score, 4).astype(np.float64)
+    # O alvo advantage deve correlacionar com QUALIDADE, não com PROGRESSO (score).
+    corr_quality = abs(np.corrcoef(v, quality)[0, 1])
+    corr_score = abs(np.corrcoef(v, score)[0, 1])
+    assert corr_quality > 0.8
+    assert corr_score < 0.2
+    # Em contraste, o alvo rtg-puro é dominado pelo score (progresso).
+    vn2 = ValueNormalizer(); vn2.recalibrate(4, rtg)
+    vraw = vn2.normalize_array(rtg, 4).astype(np.float64)
+    assert abs(np.corrcoef(vraw, score)[0, 1]) > 0.8
+
+
+def test_advantage_transform_roundtrip_is_score_aware():
+    score, rtg, _ = _advantage_dataset(seed=1)
+    vn = ValueNormalizer()
+    vn.fit_baseline(4, score, rtg)
+    vt = vn.transform(4)
+    assert vt.ready and vt.knots  # modo advantage ativo
+    # denorm/renorm devem ser inversos EXATOS a um dado score (backup rtg correto).
+    for s in (500.0, 5000.0, 15000.0):
+        for raw in (1000.0, 8000.0, 16000.0):
+            back = vt.denorm(vt.renorm(raw, s), s)
+            assert abs(back - raw) < 1e-3
+    # E o mapeamento depende do score: mesmo rtg bruto, scores diferentes -> valores
+    # normalizados diferentes (é o ponto do baseline posicional).
+    assert abs(vt.renorm(8000.0, 500.0) - vt.renorm(8000.0, 15000.0)) > 0.2
+
+
+def test_advantage_state_dict_roundtrip():
+    import json
+    score, rtg, _ = _advantage_dataset(seed=2)
+    vn = ValueNormalizer()
+    vn.fit_baseline(4, score, rtg)
+    for state in (vn.state_dict(), json.loads(json.dumps(vn.state_dict()))):
+        vn2 = ValueNormalizer()
+        vn2.load_state_dict(state)
+        assert vn2.has_baseline(4)
+        a1 = vn.advantage_array(rtg[:200], score[:200], 4)
+        a2 = vn2.advantage_array(rtg[:200], score[:200], 4)
+        assert np.allclose(a1, a2, atol=1e-6)

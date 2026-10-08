@@ -53,6 +53,14 @@ class ReplayBuffer:
             return np.empty(0, dtype=np.float32)
         return np.array([it[2] for it in ring.data], dtype=np.float32)
 
+    def scores(self, size: int) -> np.ndarray:
+        """Score ATUAL de cada posição (paralelo a `values`) — para ajustar a
+        baseline b(score)=E[rtg|score] do modo advantage."""
+        ring = self.by_size.get(size)
+        if ring is None or not ring.data:
+            return np.empty(0, dtype=np.float32)
+        return np.array([it[0].score for it in ring.data], dtype=np.float32)
+
     def sizes_ready(self, min_count: int) -> list[int]:
         return [s for s, r in self.by_size.items() if len(r) >= min_count]
 

@@ -201,7 +201,7 @@ def _backup_rtg(path, raw_future: float, vt) -> None:
         node.VL[a] -= 1
         node.total_vl -= 1
         node.N[a] += 1
-        node.W[a] += vt.renorm(cum)
+        node.W[a] += vt.renorm(cum, node.state.score)
         node.total_n += 1
 
 
@@ -269,11 +269,11 @@ def mcts_search_gen(root_state: GameState, config: MctsConfig, rng, add_noise=Fa
             path.append((node, a, chance.gained))
             node = _sample_outcome(chance, rng)
         if rtg:
-            cum = 0.0 if terminal_leaf else value_transform.denorm(net_value)
+            cum = 0.0 if terminal_leaf else value_transform.denorm(net_value, node.state.score)
             for nd, a, gained in reversed(path):
                 cum += gained
                 nd.N[a] += 1
-                nd.W[a] += value_transform.renorm(cum)
+                nd.W[a] += value_transform.renorm(cum, nd.state.score)
                 nd.total_n += 1
         else:
             value = tvf(node.state) if terminal_leaf else net_value
@@ -331,7 +331,7 @@ def run_mcts(
 
         for path, leaf, tval in collected:
             if rtg:
-                raw_future = 0.0 if leaf is None else value_transform.denorm(leaf.eval_value)
+                raw_future = 0.0 if leaf is None else value_transform.denorm(leaf.eval_value, leaf.state.score)
                 _backup_rtg(path, raw_future, value_transform)
             else:
                 value = tval if tval is not None else leaf.eval_value  # type: ignore[union-attr]
